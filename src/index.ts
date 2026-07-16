@@ -2,6 +2,8 @@
 import "dotenv/config";
 import { Command } from "commander";
 import { parseFile, summaryToMarkdown } from "./services/ast-parser.js";
+import { getFileDiff } from "./services/git-diff.js";
+import { runReviewPipeline } from "./services/ai-orchestrator.js";
 
 const program = new Command();
 
@@ -29,6 +31,33 @@ program
       console.log(JSON.stringify(summary, null, 2));
     } else {
       console.log(summaryToMarkdown(summary));
+    }
+  });
+
+program
+  .command("review")
+  .description(
+    "Run the code-reviewer and security-auditor AI agents against a file's diff",
+  )
+  .argument("<file>", "path to the TypeScript file to review")
+  .action(async (file: string) => {
+    try {
+      const astContext = summaryToMarkdown(parseFile(file));
+      const diff = getFileDiff(file);
+      const { codeReview, securityAudit } = await runReviewPipeline({
+        filePath: file,
+        astContext,
+        diff,
+      });
+
+      console.log("\n=== Code Reviewer ===\n");
+      console.log(codeReview);
+      console.log("\n=== Security Auditor ===\n");
+      console.log(securityAudit);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`slipstream: review failed: ${message}`);
+      process.exitCode = 1;
     }
   });
 
