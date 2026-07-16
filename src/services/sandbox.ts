@@ -61,7 +61,7 @@ export async function runInSandbox(
       global.console = {
         log: (...args) => _log(...args),
         info: (...args) => _log(...args),
-        warn: (...args) => _error(...args),
+        warn: (...args) => _log(...args),
         error: (...args) => _error(...args),
         assert: (condition, ...args) => {
           if (!condition) _error("Assertion failed:", ...args);
@@ -78,7 +78,12 @@ export async function runInSandbox(
     const message = error instanceof Error ? error.message : String(error);
     errors.push(message);
   } finally {
-    isolate.dispose();
+    // A tripped memory limit disposes the isolate internally before this
+    // finally runs; disposing it again throws (and has been observed to
+    // segfault the host process), so guard on isDisposed first.
+    if (!isolate.isDisposed) {
+      isolate.dispose();
+    }
   }
 
   return { ok: errors.length === 0, logs, errors };
