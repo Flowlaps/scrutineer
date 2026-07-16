@@ -1,11 +1,23 @@
 import { generateText, type LanguageModel } from "ai";
 import { loadPersonaPrompt, type PersonaPrompt } from "./prompt-loader.js";
 import { createModel, type ProviderId } from "../utils/model-factory.js";
+import { runInSandbox, type SandboxResult } from "./sandbox.js";
 
 // Bounds how much file content and model output a single review can consume, so a
 // huge or generated input file can't blow up token cost or hang on context limits.
 const MAX_SECTION_CHARS = 40_000;
 const MAX_OUTPUT_TOKENS = 4096;
+
+const TEST_GENERATOR_SYSTEM_PROMPT = `You are a test generator that produces a self-contained smoke test for the file under review.
+
+The script you write will run inside a bare V8 isolate with NO Node.js built-ins, NO \`require\`/\`import\`/\`module.exports\`, and NO filesystem or network access. Only a minimal \`console\` (log/info/warn/error/assert) is available.
+
+Rules:
+- Output ONLY plain JavaScript — no markdown code fences, no prose before or after.
+- The file under test cannot be imported. Re-implement (copy inline) only the minimal pure logic needed to exercise its exported functions, based on the AST context and diff you're given.
+- Use \`console.assert(condition, message)\` for each check.
+- End with \`console.log("PASS")\` if you expect every assertion to hold, or a \`console.log("FAIL: <reason>")\` describing what you expect to fail and why.
+- Keep it short: a happy-path case plus one edge case is enough — this is a smoke test, not an exhaustive suite.`;
 
 export interface ReviewInput {
   filePath: string;
@@ -14,9 +26,15 @@ export interface ReviewInput {
   provider: ProviderId;
 }
 
+export interface SandboxTestOutcome {
+  code: string;
+  result: SandboxResult;
+}
+
 export interface ReviewResult {
   codeReview: string;
   securityAudit: string;
+  sandboxTest: SandboxTestOutcome;
 }
 
 function truncate(text: string, maxChars: number): string {
@@ -65,6 +83,21 @@ async function runPersona(
   return text;
 }
 
+function stripCodeFences(text: string): string {
+  const fenced = text.trim().match(/^```(?:\w+)?\n([\s\S]*?)\n```$/);
+  return fenced ? fenced[1]!.trim() : text.trim();
+}
+
+async function generateSandboxTest(model: LanguageModel, input: ReviewInput): Promise<string> {
+  const { text } = await generateText({
+    model,
+    system: TEST_GENERATOR_SYSTEM_PROMPT,
+    prompt: buildUserPrompt(input),
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
+  });
+  return stripCodeFences(text);
+}
+
 export async function runReviewPipeline(input: ReviewInput): Promise<ReviewResult> {
   console.error(`slipstream: using provider "${input.provider}"`);
 
@@ -81,5 +114,12 @@ export async function runReviewPipeline(input: ReviewInput): Promise<ReviewResul
     buildUserPrompt(input, codeReview),
   );
 
-  return { codeReview, securityAudit };
+  const sandboxTestCode = await generateSandboxTest(model, input);
+  const sandboxResult = await runInSandbox(sandboxTestCode);
+
+  return {
+    codeReview,
+    securityAudit,
+    sandboxTest: { code: sandboxTestCode, result: sandboxResult },
+  };
 }

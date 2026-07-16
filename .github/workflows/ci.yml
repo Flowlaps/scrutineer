@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   build:
-    name: Typecheck, build, audit
+    name: Typecheck, build, test, audit
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -35,6 +35,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Test
+        run: npm test
 
       - name: Audit dependencies
         run: npm audit --audit-level=high

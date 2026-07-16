@@ -50,7 +50,7 @@ program
     try {
       const astContext = summaryToMarkdown(parseFile(file));
       const diff = getFileDiff(file);
-      const { codeReview, securityAudit } = await runReviewPipeline({
+      const { codeReview, securityAudit, sandboxTest } = await runReviewPipeline({
         filePath: file,
         astContext,
         diff,
@@ -61,6 +61,16 @@ program
       console.log(codeReview);
       console.log("\n=== Security Auditor ===\n");
       console.log(securityAudit);
+
+      console.log("\n=== Sandbox Test ===\n");
+      console.log(sandboxTest.code);
+      console.log(`\n--- Sandbox Result (${sandboxTest.result.ok ? "OK" : "FAILED"}) ---`);
+      for (const line of sandboxTest.result.logs) {
+        console.log(`[log] ${line}`);
+      }
+      for (const line of sandboxTest.result.errors) {
+        console.error(`[error] ${line}`);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`slipstream: review failed: ${message}`);
