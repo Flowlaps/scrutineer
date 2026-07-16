@@ -6,47 +6,18 @@ This document walks through what happens when you run `slipstream review <file>`
 
 Slipstream doesn't ask one model "is this file okay?" and print the answer. It runs a small planner loop: extract context once, pass it through two specialized personas in sequence (each one sees the prior one's output), verify a claim about the code's behavior by actually running generated code in a sandbox, and then deliver the aggregated result wherever you asked for it.
 
-```
-                     ┌─────────────────────┐
-  target file  ────► │  ts-morph AST parser │
-                     └──────────┬───────────┘
-                                │  exported functions, imports, interfaces
-                                ▼
-                     ┌─────────────────────┐
-                     │                       │
-  git diff      ────►│  context assembly     │  secrets scrubbed before
-                     │  (+ secret scrub)     │  anything leaves your machine
-                     └──────────┬───────────┘
-                                │
-                                ▼
-                     ┌─────────────────────┐
-                     │   code-reviewer       │  persona from
-                     │   (LLM pass 1)        │  addyosmani/agent-skills
-                     └──────────┬───────────┘
-                                │  findings
-                                ▼
-                     ┌─────────────────────┐
-                     │   security-auditor    │  persona from
-                     │   (LLM pass 2)        │  addyosmani/agent-skills
-                     └──────────┬───────────┘
-                                │
-                                ▼
-                     ┌─────────────────────┐
-                     │  test-generation       │  same model, asked to write
-                     │  (LLM pass 3)          │  a self-contained smoke test
-                     └──────────┬───────────┘
-                                │  generated JS
-                                ▼
-                     ┌─────────────────────┐
-                     │  isolated-vm sandbox  │  no fs, no network, no
-                     │  (air-gapped exec)     │  Node built-ins, bounded
-                     └──────────┬───────────┘  memory + timeout
-                                │
-                                ▼
-                     ┌─────────────────────┐
-                     │  aggregated Markdown  │  stdout, a file (--output),
-                     │  report                │  and/or a PR comment (--pr)
-                     └─────────────────────┘
+```mermaid
+flowchart TD
+    A["Target file<br/>(ts-morph AST parser)"] --> C["Context assembly<br/>(diff + secret scrub)"]
+    B["git diff"] --> C
+    C --> D["code-reviewer<br/>(LLM pass 1)"]
+    D --> E["security-auditor<br/>(LLM pass 2)"]
+    E --> F["test-generation<br/>(LLM pass 3)"]
+    F --> G["isolated-vm sandbox<br/>(air-gapped exec)"]
+    G --> H["Aggregated Markdown report"]
+    H --> I["stdout"]
+    H --> J["file (--output)"]
+    H --> K["PR comment (--pr)"]
 ```
 
 ## 1. Context extraction (`src/services/ast-parser.ts`, `git-diff.ts`, `secret-scrubber.ts`)
