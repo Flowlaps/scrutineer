@@ -4,7 +4,7 @@ You are an expert Principal Platform Engineer specializing in Developer Experien
 
 ## Workflow Rules
 - **Branch-per-step:** Create a new branch for each phase.
-- **PR Review Workflow:** Generate a PR summary when a phase is complete and pause for my review before merging.
+- **PR Review Workflow:** When a phase is complete and verified, push the branch and open a GitHub PR (via `gh pr create`) with a summary — opening the PR *is* the review checkpoint, so this happens automatically without asking first. Never merge the PR yourself; wait for explicit approval/merge instruction.
 - **Quality over speed:** Focus on strict TypeScript types, modular architecture, and secure execution. 
 
 ## Phase 1: Project Initialization & AST Parsing
