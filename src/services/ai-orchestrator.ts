@@ -2,7 +2,7 @@ import { generateText } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { loadPersonaPrompt, type PersonaPrompt } from "./prompt-loader.js";
 
-const MODEL_ID = process.env.SLIPSTREAM_MODEL ?? "claude-opus-4-8";
+const MODEL_ID = process.env.SLIPSTREAM_MODEL ?? "claude-sonnet-5";
 
 export interface ReviewInput {
   filePath: string;
