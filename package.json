@@ -1,0 +1,34 @@
+{
+  "name": "slipstream",
+  "version": "0.1.0",
+  "description": "Multi-agent PR review orchestrator CLI",
+  "type": "module",
+  "bin": {
+    "slipstream": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^1.2.0",
+    "ai": "^4.3.9",
+    "commander": "^13.1.0",
+    "dotenv": "^16.4.7",
+    "isolated-vm": "6.1.2",
+    "ts-morph": "^25.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
