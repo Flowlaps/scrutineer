@@ -1,10 +1,10 @@
 # Architecture
 
-This document walks through what happens when you run `slipstream review <file>`, end to end.
+This document walks through what happens when you run `scrutineer review <file>`, end to end.
 
 ## The shape of it: Planner, not a single call
 
-Slipstream doesn't ask one model "is this file okay?" and print the answer. It runs a small planner loop: extract context once, pass it through two specialized personas in sequence (each one sees the prior one's output), and — concurrently with that chain, since it doesn't depend on either persona's findings — verify a claim about the code's behavior by actually running generated code in a sandbox. Once both branches finish, it delivers the aggregated result wherever you asked for it.
+Scrutineer doesn't ask one model "is this file okay?" and print the answer. It runs a small planner loop: extract context once, pass it through two specialized personas in sequence (each one sees the prior one's output), and — concurrently with that chain, since it doesn't depend on either persona's findings — verify a claim about the code's behavior by actually running generated code in a sandbox. Once both branches finish, it delivers the aggregated result wherever you asked for it.
 
 ```mermaid
 flowchart TD

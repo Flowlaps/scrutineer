@@ -25,7 +25,7 @@ const EXPECTED_SHA256: Record<PersonaId, string> = {
   "security-auditor": "66a3f68f1c691b600ddb44e88afb138e239d0572df37be84e1f9a427c887dd0a",
 };
 
-const CACHE_DIR = path.join(os.tmpdir(), "slipstream-agent-skills");
+const CACHE_DIR = path.join(os.tmpdir(), "scrutineer-agent-skills");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function verifyIntegrity(id: PersonaId, raw: string): void {

@@ -13,7 +13,7 @@ The review pipeline (`code-reviewer` → `security-auditor` → test generation)
 - The orchestration code (`ai-orchestrator.ts`) shouldn't need to know or care which provider is active — provider selection is a `--provider` CLI flag, and that shouldn't ripple into every call site.
 
 ## Decision
-Wrap both providers behind a single `createModel(provider: ProviderId): LanguageModel` factory (`src/utils/model-factory.ts`), using the Vercel AI SDK's `@ai-sdk/anthropic` and `ollama-ai-provider-v2` packages. Both return the same `LanguageModel` type, so `generateText()` calls in the orchestrator never branch on provider. Per-provider model IDs are overridable via scoped env vars (`SLIPSTREAM_MODEL_ANTHROPIC`, `SLIPSTREAM_MODEL_OLLAMA`) so an override for one provider can't leak into the other when `--provider` switches.
+Wrap both providers behind a single `createModel(provider: ProviderId): LanguageModel` factory (`src/utils/model-factory.ts`), using the Vercel AI SDK's `@ai-sdk/anthropic` and `ollama-ai-provider-v2` packages. Both return the same `LanguageModel` type, so `generateText()` calls in the orchestrator never branch on provider. Per-provider model IDs are overridable via scoped env vars (`SCRUTINEER_MODEL_ANTHROPIC`, `SCRUTINEER_MODEL_OLLAMA`) so an override for one provider can't leak into the other when `--provider` switches.
 
 ## Alternatives Considered
 

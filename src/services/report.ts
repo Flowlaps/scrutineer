@@ -26,7 +26,7 @@ export function buildReportMarkdown(input: ReportInput): string {
   const fence = codeFence(sandboxTest.code);
 
   const sections = [
-    "# Slipstream Review Report",
+    "# Scrutineer Review Report",
     "",
     `- **File:** \`${filePath}\``,
     `- **Provider:** ${provider}`,

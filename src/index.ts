@@ -13,7 +13,7 @@ import { PROVIDER_IDS, type ProviderId } from "./utils/model-factory.js";
 const program = new Command();
 
 program
-  .name("slipstream")
+  .name("scrutineer")
   .description("Multi-agent PR review orchestrator CLI")
   .version("0.1.0");
 
@@ -28,7 +28,7 @@ program
       summary = parseFile(file);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`slipstream: failed to parse "${file}": ${message}`);
+      console.error(`scrutineer: failed to parse "${file}": ${message}`);
       process.exitCode = 1;
       return;
     }
@@ -73,13 +73,13 @@ program
     if (options.pr) {
       const prNumber = Number(options.pr);
       if (!Number.isInteger(prNumber) || prNumber <= 0) {
-        console.error(`slipstream: --pr must be a positive integer, got "${options.pr}"`);
+        console.error(`scrutineer: --pr must be a positive integer, got "${options.pr}"`);
         process.exitCode = 1;
         return;
       }
       const token = process.env.GITHUB_TOKEN;
       if (!token) {
-        console.error("slipstream: --pr requires a GITHUB_TOKEN environment variable");
+        console.error("scrutineer: --pr requires a GITHUB_TOKEN environment variable");
         process.exitCode = 1;
         return;
       }
@@ -88,7 +88,7 @@ program
         : getRepoSlugFromGit();
       if (!slug || !slug.owner || !slug.repo) {
         console.error(
-          "slipstream: could not determine the GitHub repo — pass --repo owner/repo or run inside a repo with a GitHub origin remote",
+          "scrutineer: could not determine the GitHub repo — pass --repo owner/repo or run inside a repo with a GitHub origin remote",
         );
         process.exitCode = 1;
         return;
@@ -96,7 +96,7 @@ program
       githubTarget = { ...slug, pr: prNumber, token };
     }
 
-    clack.intro("slipstream review");
+    clack.intro("scrutineer review");
 
     try {
       let astContext = "";

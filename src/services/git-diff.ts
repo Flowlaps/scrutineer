@@ -10,7 +10,7 @@ function withSecretsScrubbed(content: string): string {
   const { scrubbed, redactedCount } = scrubSecrets(content);
   if (redactedCount > 0) {
     console.error(
-      `slipstream: redacted ${redactedCount} value(s) that looked like secrets before sending to the review model`,
+      `scrutineer: redacted ${redactedCount} value(s) that looked like secrets before sending to the review model`,
     );
   }
   return scrubbed;

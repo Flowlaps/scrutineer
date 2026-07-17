@@ -1,6 +1,6 @@
-# slipstream
+# scrutineer
 
-Slipstream is a CLI that reviews the TypeScript files in your merge/pull request before you merge, one file at a time. For each file, it extracts real AST context, hands that context to a code-reviewer and then a security-auditor agent in sequence, and sandboxes an AI-generated smoke test so you get a signal on behavior, not just prose — and it can post the resulting report straight back to the PR.
+Scrutineer is a CLI that reviews the TypeScript files in your merge/pull request before you merge, one file at a time. For each file, it extracts real AST context, hands that context to a code-reviewer and then a security-auditor agent in sequence, and sandboxes an AI-generated smoke test so you get a signal on behavior, not just prose — and it can post the resulting report straight back to the PR.
 
 ## Architecture Highlights
 
@@ -24,8 +24,8 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full data flow, and [
 ## Installation & Setup
 
 ```bash
-git clone https://github.com/dallaskoncir/slipstream.git
-cd slipstream
+git clone https://github.com/dallaskoncir/scrutineer.git
+cd scrutineer
 npm install
 npm run build
 ```
@@ -39,7 +39,7 @@ cp .env.example .env
 ```
 ANTHROPIC_API_KEY=sk-ant-...
 
-# Only needed for `slipstream review --pr <number>`
+# Only needed for `scrutineer review --pr <number>`
 GITHUB_TOKEN=
 ```
 
@@ -55,32 +55,32 @@ Make sure the Ollama server is running (`ollama serve`, or it's already running 
 Optional overrides, if you want a specific model instead of the defaults (`claude-sonnet-5` for Anthropic, `qwen2.5-coder:7b` for Ollama):
 
 ```
-SLIPSTREAM_MODEL_ANTHROPIC=claude-opus-4-8
-SLIPSTREAM_MODEL_OLLAMA=llama3.1:8b
+SCRUTINEER_MODEL_ANTHROPIC=claude-opus-4-8
+SCRUTINEER_MODEL_OLLAMA=llama3.1:8b
 ```
 
-`GITHUB_TOKEN` is only needed if you want `slipstream review` to post its report as a PR comment (see below) — a personal access token with permission to comment on the repo's PRs is enough.
+`GITHUB_TOKEN` is only needed if you want `scrutineer review` to post its report as a PR comment (see below) — a personal access token with permission to comment on the repo's PRs is enough.
 
 ## Usage
 
 Run the full review pipeline (code review → security audit, with a sandboxed smoke test generated and executed in parallel) against a file. With no flags, it prints a step-by-step progress UI and the final report to your terminal:
 
 ```bash
-npx slipstream review ./src/index.ts
+npx scrutineer review ./src/index.ts
 ```
 
 Run it against a local model instead of Anthropic's API:
 
 ```bash
-npx slipstream review ./src/index.ts --provider ollama
+npx scrutineer review ./src/index.ts --provider ollama
 ```
 
 Write the report to a file, post it as a comment on a PR, or both — they're independent flags:
 
 ```bash
-npx slipstream review ./src/index.ts --output review.md
-npx slipstream review ./src/index.ts --pr 42
-npx slipstream review ./src/index.ts --output review.md --pr 42
+npx scrutineer review ./src/index.ts --output review.md
+npx scrutineer review ./src/index.ts --pr 42
+npx scrutineer review ./src/index.ts --output review.md --pr 42
 ```
 
 `--pr` needs `GITHUB_TOKEN` set and infers the repo from your `origin` remote (override with `--repo owner/repo` if that's wrong).
@@ -88,8 +88,8 @@ npx slipstream review ./src/index.ts --output review.md --pr 42
 You can also run just the AST extraction on its own, without calling any model:
 
 ```bash
-npx slipstream parse ./src/index.ts
-npx slipstream parse ./src/index.ts --json
+npx scrutineer parse ./src/index.ts
+npx scrutineer parse ./src/index.ts --json
 ```
 
-> Slipstream reviews one file at a time — for a whole MR, run it once per changed file (pair with `--pr` to post each file's report as a separate comment on the same PR). There's no recursive directory scan or single-command whole-diff review yet.
+> Scrutineer reviews one file at a time — for a whole MR, run it once per changed file (pair with `--pr` to post each file's report as a separate comment on the same PR). There's no recursive directory scan or single-command whole-diff review yet.

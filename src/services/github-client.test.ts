@@ -3,23 +3,23 @@ import assert from "node:assert/strict";
 import { parseGitHubRemote, postPrComment } from "./github-client.js";
 
 test("parses an SSH remote URL", () => {
-  assert.deepEqual(parseGitHubRemote("git@github.com:dallaskoncir/slipstream.git"), {
+  assert.deepEqual(parseGitHubRemote("git@github.com:dallaskoncir/scrutineer.git"), {
     owner: "dallaskoncir",
-    repo: "slipstream",
+    repo: "scrutineer",
   });
 });
 
 test("parses an HTTPS remote URL", () => {
-  assert.deepEqual(parseGitHubRemote("https://github.com/dallaskoncir/slipstream.git"), {
+  assert.deepEqual(parseGitHubRemote("https://github.com/dallaskoncir/scrutineer.git"), {
     owner: "dallaskoncir",
-    repo: "slipstream",
+    repo: "scrutineer",
   });
 });
 
 test("parses an HTTPS remote URL without the .git suffix", () => {
-  assert.deepEqual(parseGitHubRemote("https://github.com/dallaskoncir/slipstream"), {
+  assert.deepEqual(parseGitHubRemote("https://github.com/dallaskoncir/scrutineer"), {
     owner: "dallaskoncir",
-    repo: "slipstream",
+    repo: "scrutineer",
   });
 });
 

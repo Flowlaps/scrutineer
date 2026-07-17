@@ -1,6 +1,6 @@
-# Slipstream - Development Instructions
+# Scrutineer - Development Instructions
 
-You are an expert Principal Platform Engineer specializing in Developer Experience (DX) and Agentic Security Workflows. We are building `slipstream`, a multi-agent PR review orchestrator CLI.
+You are an expert Principal Platform Engineer specializing in Developer Experience (DX) and Agentic Security Workflows. We are building `scrutineer`, a multi-agent PR review orchestrator CLI.
 
 ## Workflow Rules
 - **Branch-per-step:** Create a new branch for each phase.
@@ -9,7 +9,7 @@ You are an expert Principal Platform Engineer specializing in Developer Experien
 
 ## Phase 1: Project Initialization & AST Parsing
 1. Scaffold a Node.js TypeScript project (ESM) with `ts-morph`, `ai`, `@ai-sdk/anthropic`, `isolated-vm`, `commander`, and `dotenv`.
-2. Build the CLI entry point (`src/index.ts`) using `commander`. Command should be run via `npx slipstream`.
+2. Build the CLI entry point (`src/index.ts`) using `commander`. Command should be run via `npx scrutineer`.
 3. Implement `src/services/ast-parser.ts` using `ts-morph` to extract exported function signatures, imported dependencies, and interfaces from a given file.
 4. Test the AST extraction on a dummy file and output a clean JSON/Markdown structure optimized for an LLM context window.
 
@@ -40,10 +40,10 @@ Please create a new branch for Phase 5 and execute the following steps:
    - Create a clean, professional `README.md` at the root of the repository.
    - Use a human, direct tone. Avoid corporate buzzwords or overly formal AI-generated language (e.g., do not use words like "delve," "cutting-edge," or "harnessing").
    - Include the following sections:
-     - **Overview:** A concise 2-sentence summary of what `slipstream` does (an agentic PR review swarm CLI).
+     - **Overview:** A concise 2-sentence summary of what `scrutineer` does (an agentic PR review swarm CLI).
      - **Architecture Highlights:** Briefly mention the use of `ts-morph` for AST extraction, the Vercel AI SDK Model Factory (Anthropic/Ollama), and `isolated-vm` for secure sandboxing.
      - **Installation & Setup:** How to install dependencies, set `.env` variables, and pull the local Qwen model.
-     - **Usage:** Provide a code block showing the CLI command (`npx slipstream analyze ./src --provider ollama`).
+     - **Usage:** Provide a code block showing the CLI command (`npx scrutineer analyze ./src --provider ollama`).
 
 2. **Generate an Architecture Document (`docs/ARCHITECTURE.md`):**
    - Create a brief, practical markdown document outlining the data flow.
@@ -51,7 +51,7 @@ Please create a new branch for Phase 5 and execute the following steps:
 
 3. **Establish the PR Template (`.github/pull_request_template.md`):**
    - Create a standard PR template matching our branch-per-step workflow.
-   - Include sections for: Summary, Why, Scope, Files Changed, and Checks Run (specifically including a checkbox for "Ran slipstream analysis on diff").
+   - Include sections for: Summary, Why, Scope, Files Changed, and Checks Run (specifically including a checkbox for "Ran scrutineer analysis on diff").
 
 4. **Verify and Wrap Up:**
    - Ensure all markdown files are properly formatted and easy to read.
@@ -73,12 +73,12 @@ The ASCII-art data-flow diagram in `docs/ARCHITECTURE.md` is hand-drawn and frag
 1. Create a new branch for Phase 7.
 2. In `runReviewPipeline`, kick off `generateSandboxTest` in parallel with the code-review/security-audit chain (e.g. via `Promise.all`) instead of sequencing it after them.
 3. Update or add tests confirming the pipeline still returns the same `ReviewResult` shape and that all three model calls complete correctly when run concurrently.
-4. Verify `npm run typecheck`, `npm run build`, and `npm test` pass, and manually time a `slipstream review` run before/after to confirm the latency improvement.
+4. Verify `npm run typecheck`, `npm run build`, and `npm test` pass, and manually time a `scrutineer review` run before/after to confirm the latency improvement.
 5. Push the branch and open a PR per the standard workflow.
 
 ## Phase 8: Prompt Caching for Token Efficiency
 
-The AST context + diff (up to 40K chars) is currently resent in full on every one of the three model calls in a single `review` run — a real intra-run duplication, since the code-review and test-generation prompts share an identical AST+diff prefix, and the security-audit prompt reuses that same prefix with the code-review findings appended after it. The code-reviewer and security-auditor persona system prompts (from `prompt-loader.ts`), by contrast, are each used only *once* per run — call 1 uses the code-reviewer prompt, call 2 uses the security-auditor prompt, and call 3 (test generation) uses its own hardcoded `TEST_GENERATOR_SYSTEM_PROMPT` in `ai-orchestrator.ts`, not a persona prompt at all — so caching those pays off only *across* separate `slipstream review` invocations within the cache TTL (e.g. reviewing several files back to back), not within a single run.
+The AST context + diff (up to 40K chars) is currently resent in full on every one of the three model calls in a single `review` run — a real intra-run duplication, since the code-review and test-generation prompts share an identical AST+diff prefix, and the security-audit prompt reuses that same prefix with the code-review findings appended after it. The code-reviewer and security-auditor persona system prompts (from `prompt-loader.ts`), by contrast, are each used only *once* per run — call 1 uses the code-reviewer prompt, call 2 uses the security-auditor prompt, and call 3 (test generation) uses its own hardcoded `TEST_GENERATOR_SYSTEM_PROMPT` in `ai-orchestrator.ts`, not a persona prompt at all — so caching those pays off only *across* separate `scrutineer review` invocations within the cache TTL (e.g. reviewing several files back to back), not within a single run.
 
 Use Anthropic prompt caching (`@ai-sdk/anthropic`'s `providerOptions.anthropic.cacheControl`) to capture both wins:
 
@@ -86,5 +86,5 @@ Use Anthropic prompt caching (`@ai-sdk/anthropic`'s `providerOptions.anthropic.c
 2. In `src/services/ai-orchestrator.ts`, mark the AST-context/diff portion of the user prompt as cacheable (`cacheControl: { type: "ephemeral" }`) via `providerOptions.anthropic` on all three calls — this is the primary, intra-run win. Also mark each persona's system prompt as cacheable on its single call, for the smaller cross-invocation win.
 3. Confirm this only applies to the `anthropic` provider — the `ollama` path has no caching support, so behavior for `ollama` must stay a no-op, not an error.
 4. Capture and log token usage (`generateText`'s returned `usage`) per call so the caching effect is visible and verifiable, not just assumed.
-5. Verify `npm run typecheck`, `npm run build`, and `npm test` pass. Confirm the AST/diff caching by comparing input-token cost between the first and later calls within one `review` run, and confirm the persona caching by running `slipstream review` twice in a row and comparing the second run's cost to the first's.
+5. Verify `npm run typecheck`, `npm run build`, and `npm test` pass. Confirm the AST/diff caching by comparing input-token cost between the first and later calls within one `review` run, and confirm the persona caching by running `scrutineer review` twice in a row and comparing the second run's cost to the first's.
 6. Push the branch and open a PR per the standard workflow.

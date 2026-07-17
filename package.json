@@ -1,10 +1,10 @@
 {
-  "name": "slipstream",
+  "name": "scrutineer",
   "version": "0.1.0",
   "description": "Multi-agent PR review orchestrator CLI",
   "type": "module",
   "bin": {
-    "slipstream": "./dist/index.js"
+    "scrutineer": "./dist/index.js"
   },
   "files": [
     "dist"

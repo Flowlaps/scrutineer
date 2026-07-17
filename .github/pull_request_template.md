@@ -21,7 +21,7 @@
 - [ ] `npm run typecheck` passes
 - [ ] `npm run build` passes
 - [ ] `npm test` passes
-- [ ] Ran `slipstream review` on the diff (or the relevant file) and addressed anything it flagged
+- [ ] Ran `scrutineer review` on the diff (or the relevant file) and addressed anything it flagged
 - [ ] Verified the change manually (describe how below, if not obvious)
 
 <!-- Manual verification notes: -->

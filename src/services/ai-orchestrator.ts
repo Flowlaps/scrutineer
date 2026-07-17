@@ -113,7 +113,7 @@ function buildUserMessage(input: ReviewInput, priorFindings?: string): ModelMess
 function logUsage(stage: ReviewStage, usage: LanguageModelUsage): void {
   const { inputTokens, outputTokens, inputTokenDetails } = usage;
   console.error(
-    `[slipstream] ${stage} usage — input: ${inputTokens ?? "?"} ` +
+    `[scrutineer] ${stage} usage — input: ${inputTokens ?? "?"} ` +
       `(cache read: ${inputTokenDetails.cacheReadTokens ?? 0}, cache write: ${inputTokenDetails.cacheWriteTokens ?? 0}), ` +
       `output: ${outputTokens ?? "?"}`,
   );
