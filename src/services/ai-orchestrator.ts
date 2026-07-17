@@ -125,6 +125,11 @@ export async function runReviewPipeline(
     const result = await runInSandbox(code);
     return { code, result };
   })();
+  // Prevent an unhandled-rejection crash: if codeReviewPromise or the
+  // security-audit call below rejects first, this function exits without
+  // ever reaching the `await sandboxTestPromise` line, leaving a later
+  // rejection here with no handler attached.
+  sandboxTestPromise.catch(() => {});
 
   const codeReview = await codeReviewPromise;
 
