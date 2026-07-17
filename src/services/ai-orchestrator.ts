@@ -114,7 +114,19 @@ export async function runReviewPipeline(
   ]);
 
   onProgress?.("code-review");
-  const codeReview = await runPersona(model, codeReviewer, buildUserPrompt(input));
+  const codeReviewPromise = runPersona(model, codeReviewer, buildUserPrompt(input));
+
+  // generateSandboxTest only depends on the AST context + diff, not on either
+  // persona's findings, so it runs concurrently with the review chain above
+  // instead of after it.
+  onProgress?.("sandbox-test");
+  const sandboxTestPromise = (async () => {
+    const code = await generateSandboxTest(model, input);
+    const result = await runInSandbox(code);
+    return { code, result };
+  })();
+
+  const codeReview = await codeReviewPromise;
 
   onProgress?.("security-audit");
   const securityAudit = await runPersona(
@@ -123,13 +135,11 @@ export async function runReviewPipeline(
     buildUserPrompt(input, codeReview),
   );
 
-  onProgress?.("sandbox-test");
-  const sandboxTestCode = await generateSandboxTest(model, input);
-  const sandboxResult = await runInSandbox(sandboxTestCode);
+  const sandboxTest = await sandboxTestPromise;
 
   return {
     codeReview,
     securityAudit,
-    sandboxTest: { code: sandboxTestCode, result: sandboxResult },
+    sandboxTest,
   };
 }
