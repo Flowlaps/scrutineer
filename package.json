@@ -1,14 +1,36 @@
 {
-  "name": "scrutineer",
+  "name": "@flowlaps/scrutineer",
   "version": "0.1.0",
   "description": "Multi-agent PR review orchestrator CLI",
   "type": "module",
+  "license": "MIT",
+  "author": "Dallas Koncir",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dallaskoncir/scrutineer.git"
+  },
+  "homepage": "https://github.com/dallaskoncir/scrutineer#readme",
+  "bugs": {
+    "url": "https://github.com/dallaskoncir/scrutineer/issues"
+  },
+  "keywords": [
+    "cli",
+    "code-review",
+    "ai",
+    "llm",
+    "pr-review",
+    "security-audit",
+    "ts-morph"
+  ],
   "bin": {
     "scrutineer": "./dist/index.js"
   },
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=22"
   },

@@ -23,6 +23,22 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full data flow, and [
 
 ## Installation & Setup
 
+Install from npm:
+
+```bash
+npm install -g @flowlaps/scrutineer
+```
+
+Or run it straight from the registry without installing:
+
+```bash
+npx @flowlaps/scrutineer review ./src/index.ts
+```
+
+(The commands below use `scrutineer` for brevity, assuming a global install. If you're using `npx @flowlaps/scrutineer` instead, swap that in wherever you see `scrutineer`.)
+
+To work on the CLI itself, build from source instead:
+
 ```bash
 git clone https://github.com/dallaskoncir/scrutineer.git
 cd scrutineer
@@ -66,21 +82,21 @@ SCRUTINEER_MODEL_OLLAMA=llama3.1:8b
 Run the full review pipeline (code review → security audit, with a sandboxed smoke test generated and executed in parallel) against a file. With no flags, it prints a step-by-step progress UI and the final report to your terminal:
 
 ```bash
-npx scrutineer review ./src/index.ts
+scrutineer review ./src/index.ts
 ```
 
 Run it against a local model instead of Anthropic's API:
 
 ```bash
-npx scrutineer review ./src/index.ts --provider ollama
+scrutineer review ./src/index.ts --provider ollama
 ```
 
 Write the report to a file, post it as a comment on a PR, or both — they're independent flags:
 
 ```bash
-npx scrutineer review ./src/index.ts --output review.md
-npx scrutineer review ./src/index.ts --pr 42
-npx scrutineer review ./src/index.ts --output review.md --pr 42
+scrutineer review ./src/index.ts --output review.md
+scrutineer review ./src/index.ts --pr 42
+scrutineer review ./src/index.ts --output review.md --pr 42
 ```
 
 `--pr` needs `GITHUB_TOKEN` set and infers the repo from your `origin` remote (override with `--repo owner/repo` if that's wrong).
@@ -88,8 +104,8 @@ npx scrutineer review ./src/index.ts --output review.md --pr 42
 You can also run just the AST extraction on its own, without calling any model:
 
 ```bash
-npx scrutineer parse ./src/index.ts
-npx scrutineer parse ./src/index.ts --json
+scrutineer parse ./src/index.ts
+scrutineer parse ./src/index.ts --json
 ```
 
 > Scrutineer reviews one file at a time — for a whole MR, run it once per changed file (pair with `--pr` to post each file's report as a separate comment on the same PR). There's no recursive directory scan or single-command whole-diff review yet.
