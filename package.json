@@ -1,6 +1,6 @@
 {
   "name": "@flowlaps/scrutineer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Multi-agent PR review orchestrator CLI",
   "type": "module",
   "license": "MIT",
