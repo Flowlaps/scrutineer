@@ -8,7 +8,7 @@ import { getFileDiff } from "./services/git-diff.js";
 import { runReviewPipeline, type ReviewStage } from "./services/ai-orchestrator.js";
 import { buildReportMarkdown } from "./services/report.js";
 import { getRepoSlugFromGit, postPrComment } from "./services/github-client.js";
-import { PROVIDER_IDS, type ProviderId } from "./utils/model-factory.js";
+import { MODEL_ENV_VAR, PROVIDER_IDS, type ProviderId } from "./utils/model-factory.js";
 
 const program = new Command();
 
@@ -67,6 +67,13 @@ program
   .option("--output <path>", "write the aggregated report to a Markdown file")
   .option("--pr <number>", "post the aggregated report as a comment on this PR number")
   .option("--repo <owner/repo>", "GitHub repo slug for --pr (defaults to the origin remote)")
+  .addHelpText(
+    "after",
+    "\nEnvironment variables:\n" +
+      `  ${MODEL_ENV_VAR.anthropic}   override the default model for --provider anthropic\n` +
+      `  ${MODEL_ENV_VAR.ollama}      override the default model for --provider ollama\n` +
+      "  See .env.example for the current defaults and other supported variables.",
+  )
   .action(async (file: string, options: ReviewOptions) => {
     let githubTarget: { owner: string; repo: string; pr: number; token: string } | undefined;
 

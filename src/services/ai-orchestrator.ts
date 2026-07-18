@@ -1,4 +1,5 @@
 import {
+  APICallError,
   generateText,
   type Instructions,
   type LanguageModel,
@@ -7,13 +8,19 @@ import {
   type TextPart,
 } from "ai";
 import { loadPersonaPrompt, type PersonaPrompt } from "./prompt-loader.js";
-import { createModel, type ProviderId } from "../utils/model-factory.js";
+import { createModel, getModelId, type ProviderId } from "../utils/model-factory.js";
 import { runInSandbox, type SandboxResult } from "./sandbox.js";
 
 // Bounds how much file content and model output a single review can consume, so a
 // huge or generated input file can't blow up token cost or hang on context limits.
 const MAX_SECTION_CHARS = 40_000;
 const MAX_OUTPUT_TOKENS = 4096;
+
+// Bounds every model call on its own, so a broken provider (bad key, unreachable
+// host, model not found) fails in bounded time instead of hanging indefinitely —
+// this is what actually stops the process from hanging, not just the shared abort
+// wiring below (which only helps once *something else* has already failed).
+const REQUEST_TIMEOUT_MS = 120_000;
 
 const TEST_GENERATOR_SYSTEM_PROMPT = `You are a test generator that produces a self-contained smoke test for the file under review.
 
@@ -110,6 +117,23 @@ function buildUserMessage(input: ReviewInput, priorFindings?: string): ModelMess
   return { role: "user", content };
 }
 
+// Ollama's own "model not found" response doesn't survive the AI SDK's generic
+// error handling as anything more than a bare "Not Found" (unlike the Anthropic
+// provider's actionable missing-key message), so rewrap it here with the model ID
+// and the exact command to fix it. Anything else — connection errors, timeouts,
+// real Anthropic errors — passes through unchanged.
+function friendlyModelError(error: unknown, provider: ProviderId, model: LanguageModel): unknown {
+  if (provider !== "ollama" || !APICallError.isInstance(error) || error.statusCode !== 404) {
+    return error;
+  }
+  const modelId = getModelId(model);
+  return new Error(
+    `Model "${modelId}" not found on the Ollama instance. Run \`ollama pull ${modelId}\` or set ` +
+      "SCRUTINEER_MODEL_OLLAMA to a model you've already pulled.",
+    { cause: error },
+  );
+}
+
 function logUsage(stage: ReviewStage, usage: LanguageModelUsage): void {
   const { inputTokens, outputTokens, inputTokenDetails } = usage;
   console.error(
@@ -125,17 +149,26 @@ async function runPersona(
   persona: PersonaPrompt,
   stage: ReviewStage,
   userMessage: ModelMessage,
+  abortSignal: AbortSignal,
 ): Promise<string> {
   const cacheControl = cacheControlProviderOptions(provider);
   const system: Instructions = cacheControl
     ? { role: "system", content: persona.systemPrompt, providerOptions: cacheControl }
     : { role: "system", content: persona.systemPrompt };
-  const { text, usage } = await generateText({
-    model,
-    system,
-    messages: [userMessage],
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
-  });
+  let text: string;
+  let usage: LanguageModelUsage;
+  try {
+    ({ text, usage } = await generateText({
+      model,
+      system,
+      messages: [userMessage],
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      abortSignal,
+      timeout: REQUEST_TIMEOUT_MS,
+    }));
+  } catch (error) {
+    throw friendlyModelError(error, provider, model);
+  }
   logUsage(stage, usage);
   return text;
 }
@@ -145,13 +178,25 @@ function stripCodeFences(text: string): string {
   return fenced ? fenced[1]!.trim() : text.trim();
 }
 
-async function generateSandboxTest(model: LanguageModel, input: ReviewInput): Promise<string> {
-  const { text, usage } = await generateText({
-    model,
-    system: TEST_GENERATOR_SYSTEM_PROMPT,
-    messages: [buildUserMessage(input)],
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
-  });
+async function generateSandboxTest(
+  model: LanguageModel,
+  input: ReviewInput,
+  abortSignal: AbortSignal,
+): Promise<string> {
+  let text: string;
+  let usage: LanguageModelUsage;
+  try {
+    ({ text, usage } = await generateText({
+      model,
+      system: TEST_GENERATOR_SYSTEM_PROMPT,
+      messages: [buildUserMessage(input)],
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      abortSignal,
+      timeout: REQUEST_TIMEOUT_MS,
+    }));
+  } catch (error) {
+    throw friendlyModelError(error, input.provider, model);
+  }
   logUsage("sandbox-test", usage);
   return stripCodeFences(text);
 }
@@ -167,6 +212,12 @@ export async function runReviewPipeline(
     loadPersonaPrompt("security-auditor"),
   ]);
 
+  // Shared across every call in this run: each call is independently bounded by
+  // its own `timeout` (see REQUEST_TIMEOUT_MS), but this lets a failure in one
+  // call cut the others short immediately too, instead of leaving them to run
+  // out their own timeout unobserved after this function has already returned.
+  const controller = new AbortController();
+
   onProgress?.("code-review");
   const codeReviewPromise = runPersona(
     model,
@@ -174,6 +225,7 @@ export async function runReviewPipeline(
     codeReviewer,
     "code-review",
     buildUserMessage(input),
+    controller.signal,
   );
 
   // generateSandboxTest only depends on the AST context + diff, not on either
@@ -181,26 +233,44 @@ export async function runReviewPipeline(
   // instead of after it.
   onProgress?.("sandbox-test");
   const sandboxTestPromise = (async () => {
-    const code = await generateSandboxTest(model, input);
+    const code = await generateSandboxTest(model, input, controller.signal);
     const result = await runInSandbox(code);
     return { code, result };
   })();
   // Prevent an unhandled-rejection crash: if codeReviewPromise or the
   // security-audit call below rejects first, this function exits without
   // ever reaching the `await sandboxTestPromise` line, leaving a later
-  // rejection here with no handler attached.
-  sandboxTestPromise.catch(() => {});
+  // rejection here with no handler attached. Still surfaced via console.error
+  // so a genuine sandbox-test bug isn't indistinguishable from a cancellation.
+  sandboxTestPromise.catch((error) => {
+    console.error(
+      `[scrutineer] sandbox-test failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
 
-  const codeReview = await codeReviewPromise;
+  let codeReview: string;
+  try {
+    codeReview = await codeReviewPromise;
+  } catch (error) {
+    controller.abort(error);
+    throw error;
+  }
 
   onProgress?.("security-audit");
-  const securityAudit = await runPersona(
-    model,
-    input.provider,
-    securityAuditor,
-    "security-audit",
-    buildUserMessage(input, codeReview),
-  );
+  let securityAudit: string;
+  try {
+    securityAudit = await runPersona(
+      model,
+      input.provider,
+      securityAuditor,
+      "security-audit",
+      buildUserMessage(input, codeReview),
+      controller.signal,
+    );
+  } catch (error) {
+    controller.abort(error);
+    throw error;
+  }
 
   const sandboxTest = await sandboxTestPromise;
 

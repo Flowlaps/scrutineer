@@ -13,7 +13,8 @@ const DEFAULT_MODEL_ID: Record<ProviderId, string> = {
 
 // Scoped per provider so an override set for one provider (e.g. a pinned Anthropic
 // model) can't leak into another provider's model ID when --provider switches.
-const MODEL_ENV_VAR: Record<ProviderId, string> = {
+// Exported so the CLI's --help text can list these without duplicating the names.
+export const MODEL_ENV_VAR: Record<ProviderId, string> = {
   anthropic: "SCRUTINEER_MODEL_ANTHROPIC",
   ollama: "SCRUTINEER_MODEL_OLLAMA",
 };
@@ -102,4 +103,10 @@ export async function createModel(provider: ProviderId): Promise<LanguageModel> 
       return ollama(override ?? (await detectOllamaModelId()));
     }
   }
+}
+
+// LanguageModel is a union that also allows a bare provider:model-id string, so
+// `.modelId` isn't accessible without narrowing that case out first.
+export function getModelId(model: LanguageModel): string {
+  return typeof model === "string" ? model : model.modelId;
 }
