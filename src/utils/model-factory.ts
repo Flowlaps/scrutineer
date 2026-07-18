@@ -8,7 +8,7 @@ export const PROVIDER_IDS: readonly ProviderId[] = ["anthropic", "ollama"];
 
 const DEFAULT_MODEL_ID: Record<ProviderId, string> = {
   anthropic: "claude-sonnet-5",
-  ollama: "qwen2.5-coder:7b",
+  ollama: "phi4",
 };
 
 // Scoped per provider so an override set for one provider (e.g. a pinned Anthropic

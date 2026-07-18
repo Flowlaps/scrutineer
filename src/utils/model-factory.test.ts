@@ -120,7 +120,7 @@ test("createModel(ollama) falls back to the hardcoded default when Ollama is unr
   }) as typeof fetch);
 
   const model = await createModel("ollama");
-  assert.equal(modelId(model), "qwen2.5-coder:7b");
+  assert.equal(modelId(model), "phi4");
 });
 
 test("createModel(ollama) queries OLLAMA_HOST instead of the 127.0.0.1 default when set", async (t) => {

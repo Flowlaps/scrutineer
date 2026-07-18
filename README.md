@@ -65,12 +65,12 @@ You only need `ANTHROPIC_API_KEY` if you're using the default `anthropic` provid
 
 ```bash
 # Install Ollama: https://ollama.com/download
-ollama pull qwen2.5-coder:7b
+ollama pull phi4
 ```
 
 Make sure the Ollama server is running (`ollama serve`, or it's already running as a background service) before using `--provider ollama`.
 
-Optional overrides, if you want a specific model instead of the defaults (`claude-sonnet-5` for Anthropic, `qwen2.5-coder:7b` for Ollama):
+Optional overrides, if you want a specific model instead of the defaults (`claude-sonnet-5` for Anthropic, `phi4` for Ollama):
 
 ```
 SCRUTINEER_MODEL_ANTHROPIC=claude-opus-4-8
