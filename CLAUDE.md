@@ -89,6 +89,17 @@ Use Anthropic prompt caching (`@ai-sdk/anthropic`'s `providerOptions.anthropic.c
 5. Verify `npm run typecheck`, `npm run build`, and `npm test` pass. Confirm the AST/diff caching by comparing input-token cost between the first and later calls within one `review` run, and confirm the persona caching by running `scrutineer review` twice in a row and comparing the second run's cost to the first's.
 6. Push the branch and open a PR per the standard workflow.
 
+### Phase 9: Native Git Diffing (DX Improvement)
+
+Remove the burden of writing complex bash `pre-push` hooks by moving Git diff resolution into the CLI natively using Node's `child_process`.
+
+1. Use `commander` to add a new `--diff <target>` flag (e.g., `--diff origin/main`).
+2. Use `child_process.execSync` to run `git diff --name-only <target>...HEAD`.
+3.  Filter the output to only include `.ts` and `.tsx` files.
+4. Fallback gracefully: If the git command fails (e.g., target ref doesn't exist), exit with a clear, user-friendly error message, not a raw stack trace.
+5. The command should parse the AST for all files in the diff and send them to the agent swarm as a single batch for cross-file context.
+6. Follow standard workflow around verification and open a PR.
+
 ## Agent Skills Policy
 Use agent skills library selectively, keeping the context window focused:
 - **Match the Skill to the Task**: Pick whichever installed skill best fits the work at hand rather than following a fixed branch-to-skill mapping.
