@@ -51,3 +51,16 @@ test("scrutineer review fails with a friendly message when both a file and --dif
   assert.equal(status, 1);
   assert.match(stderr, /pass either a file path or --diff <target>, not both/);
 });
+
+test("scrutineer review --diff <bad-ref> fails with a friendly message, not a raw git stack trace", () => {
+  const { status, stderr } = runReview(["--diff", "not-a-real-ref-hopefully"]);
+  assert.equal(status, 1);
+  assert.match(stderr, /could not diff against "not-a-real-ref-hopefully"/);
+  assert.doesNotMatch(stderr, /at Object/); // no raw Node/git stack trace leaking through
+});
+
+test("scrutineer review --diff <target starting with '-'> is rejected before it reaches git", () => {
+  const { status, stderr } = runReview(["--diff", "--output=/tmp/scrutineer-should-not-exist.txt"]);
+  assert.equal(status, 1);
+  assert.match(stderr, /not a valid git ref/);
+});

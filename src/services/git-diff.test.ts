@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getChangedFiles, getDiffAgainstTarget } from "./git-diff.js";
@@ -45,6 +45,21 @@ test("getChangedFiles throws a friendly error for an unreachable target ref", (t
   assert.throws(
     () => getChangedFiles("origin/does-not-exist", dir),
     /could not diff against "origin\/does-not-exist"/,
+  );
+});
+
+test("getChangedFiles rejects a target starting with '-' instead of passing it through to git as a flag", (t) => {
+  const dir = setupRepo(t);
+  const outputPath = join(dir, "pwned.txt");
+  assert.throws(() => getChangedFiles(`--output=${outputPath}`, dir), /not a valid git ref/);
+  assert.equal(existsSync(outputPath), false, "git must never see the injected --output flag");
+});
+
+test("getDiffAgainstTarget rejects a target starting with '-' instead of passing it through to git as a flag", (t) => {
+  const dir = setupRepo(t);
+  assert.throws(
+    () => getDiffAgainstTarget("--output=/tmp/scrutineer-should-not-exist.txt", ["base.ts"], dir),
+    /not a valid git ref/,
   );
 });
 

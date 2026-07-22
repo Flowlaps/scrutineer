@@ -301,3 +301,24 @@ test("omits cache-control metadata entirely for the ollama provider instead of e
 
   assert.ok(calls.every((c) => !c.hasSystemCacheControl && !c.hasUserCacheControl));
 });
+
+test("warns on stderr when the AST context or diff is truncated, instead of silently dropping content", async (t) => {
+  resetState();
+  const messages: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    messages.push(args.map(String).join(" "));
+  };
+  t.after(() => {
+    console.error = originalConsoleError;
+  });
+
+  // A --diff batch concatenates every changed file's AST context into one string,
+  // which is what makes crossing the 40K-char cap realistic in practice.
+  await runReviewPipeline({ ...baseInput, astContext: "x".repeat(40_001) });
+
+  assert.ok(
+    messages.some((m) => m.includes("AST context") && m.includes("example.ts") && m.includes("truncated")),
+    `expected a truncation warning mentioning the AST context and file, got: ${JSON.stringify(messages)}`,
+  );
+});

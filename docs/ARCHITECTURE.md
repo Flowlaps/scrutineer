@@ -1,6 +1,6 @@
 # Architecture
 
-This document walks through what happens when you run `scrutineer review <file>`, end to end.
+This document walks through what happens when you run `scrutineer review <file>` or `scrutineer review --diff <target>`, end to end.
 
 ## The shape of it: Planner, not a single call
 
@@ -8,9 +8,9 @@ Scrutineer doesn't ask one model "is this file okay?" and print the answer. It r
 
 ```mermaid
 flowchart TD
-    A["Target file"] --> A2["ts-morph AST parser"]
-    A2 --> C["Context assembly<br/>(diff + secret scrub)"]
-    B["git diff"] --> C
+    A["Target file(s)<br/>(single file, or every changed<br/>.ts/.tsx file via --diff <target>)"] --> A2["ts-morph AST parser<br/>(once per file)"]
+    A2 --> C["Context assembly<br/>(concatenated AST + diff, secret scrub)"]
+    B["git diff<br/>(working tree, or vs --diff target)"] --> C
     C --> D["code-reviewer<br/>(LLM pass 1)"]
     D --> E["security-auditor<br/>(LLM pass 2)"]
     C --> F["test-generation<br/>(LLM pass, runs in parallel with D/E)"]
@@ -24,14 +24,16 @@ flowchart TD
 
 ## 1. Context extraction (`src/services/ast-parser.ts`, `git-diff.ts`, `secret-scrubber.ts`)
 
-Before any model is involved, the target file is parsed with `ts-morph` to pull out:
+Before any model is involved, every target file is parsed with `ts-morph` to pull out:
 - exported function signatures (name, parameters, return type, async-ness, JSDoc)
 - imports (named/default/namespace, type-only or not)
 - interfaces (properties, `extends`)
 
 This gets rendered to Markdown optimized for an LLM context window — it's denser and more reliable than pasting the raw file, and it means the model gets the same structured facts about the file every run.
 
-Alongside the AST summary, `git-diff.ts` pulls the file's working-tree or staged diff (falling back to the full file if there's no diff yet), and `secret-scrubber.ts` redacts anything that looks like a credential out of it before it goes anywhere near a prompt.
+Alongside the AST summary, `git-diff.ts` pulls a diff, and `secret-scrubber.ts` redacts anything that looks like a credential out of it before it goes anywhere near a prompt. Which diff depends on how you invoked `review`:
+- **`scrutineer review <file>`** — the file's working-tree or staged diff (falling back to the full file if there's no diff yet).
+- **`scrutineer review --diff <target>`** — `getChangedFiles()` resolves `git diff --name-only <target>...HEAD`, filtered to `.ts`/`.tsx`, then `getDiffAgainstTarget()` diffs all of those files against `<target>` in one `git diff` call. Every changed file's AST summary and diff are concatenated (with per-file headers) into a single `astContext`/`diff` pair, and that combined context goes through the pipeline as **one** batch — one `runReviewPipeline` call covering every changed file, not one call per file — so findings can reference across files instead of reviewing each in isolation. `<target>` is validated to reject anything starting with `-` before it reaches `git`, since git parses the revision-range argument as a flag otherwise (a real argument-injection risk, not just a shell one — `execFileSync` already rules out shell injection on its own).
 
 ## 2. The personas (`src/services/prompt-loader.ts`)
 

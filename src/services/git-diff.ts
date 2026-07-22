@@ -19,9 +19,22 @@ function withSecretsScrubbed(content: string): string {
 }
 
 // Ref is passed as an argv element via execFileSync (never through a shell), so a
-// hostile or malformed --diff target can't inject shell commands — the worst it can
-// do is fail as an invalid git ref, which is handled below.
+// hostile or malformed --diff target can't inject shell commands. It can still
+// inject a git *argument*, though: a target starting with "-" (e.g.
+// "--output=/some/path") gets parsed by git as a flag rather than as part of the
+// revision range, since it lands in the same argv token as "...HEAD". No legitimate
+// git ref starts with "-", so reject that up front instead of handing it to git.
+function assertSafeRefTarget(target: string): void {
+  if (target.startsWith("-")) {
+    throw new Error(
+      `scrutineer: "${target}" is not a valid git ref for --diff — refs can't start with "-". ` +
+        "Pass a branch, tag, or commit, e.g. --diff origin/main.",
+    );
+  }
+}
+
 export function getChangedFiles(target: string, cwd?: string): string[] {
+  assertSafeRefTarget(target);
   let output: string;
   try {
     output = runGitDiff(["diff", "--name-only", `${target}...HEAD`], cwd);
@@ -42,6 +55,7 @@ export function getChangedFiles(target: string, cwd?: string): string[] {
 }
 
 export function getDiffAgainstTarget(target: string, filePaths: string[], cwd?: string): string {
+  assertSafeRefTarget(target);
   const diff = runGitDiff(["diff", "--no-color", `${target}...HEAD`, "--", ...filePaths], cwd);
   return withSecretsScrubbed(diff);
 }
