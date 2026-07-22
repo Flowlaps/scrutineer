@@ -4,7 +4,7 @@ import { writeFile } from "node:fs/promises";
 import { Command, Option } from "commander";
 import * as clack from "@clack/prompts";
 import { parseFile, summaryToMarkdown } from "./services/ast-parser.js";
-import { getFileDiff } from "./services/git-diff.js";
+import { getFileDiff, getChangedFiles, getDiffAgainstTarget } from "./services/git-diff.js";
 import { runReviewPipeline, type ReviewStage } from "./services/ai-orchestrator.js";
 import { buildReportMarkdown } from "./services/report.js";
 import { getRepoSlugFromGit, postPrComment } from "./services/github-client.js";
@@ -51,6 +51,7 @@ interface ReviewOptions {
   output?: string;
   pr?: string;
   repo?: string;
+  diff?: string;
 }
 
 program
@@ -58,7 +59,7 @@ program
   .description(
     "Run the code-reviewer and security-auditor AI agents against a file's diff",
   )
-  .argument("<file>", "path to the TypeScript file to review")
+  .argument("[file]", "path to the TypeScript file to review (omit when using --diff)")
   .addOption(
     new Option("--provider <type>", "AI provider to use for the review agents")
       .choices(PROVIDER_IDS)
@@ -67,6 +68,10 @@ program
   .option("--output <path>", "write the aggregated report to a Markdown file")
   .option("--pr <number>", "post the aggregated report as a comment on this PR number")
   .option("--repo <owner/repo>", "GitHub repo slug for --pr (defaults to the origin remote)")
+  .option(
+    "--diff <target>",
+    "review every changed .ts/.tsx file against this git ref (e.g. origin/main) as a single batch, instead of one file",
+  )
   .addHelpText(
     "after",
     "\nEnvironment variables:\n" +
@@ -74,7 +79,18 @@ program
       `  ${MODEL_ENV_VAR.ollama}      override the default model for --provider ollama\n` +
       "  See .env.example for the current defaults and other supported variables.",
   )
-  .action(async (file: string, options: ReviewOptions) => {
+  .action(async (file: string | undefined, options: ReviewOptions) => {
+    if (!file && !options.diff) {
+      console.error("scrutineer: provide a file path or --diff <target>");
+      process.exitCode = 1;
+      return;
+    }
+    if (file && options.diff) {
+      console.error("scrutineer: pass either a file path or --diff <target>, not both");
+      process.exitCode = 1;
+      return;
+    }
+
     let githubTarget: { owner: string; repo: string; pr: number; token: string } | undefined;
 
     if (options.pr) {
@@ -109,31 +125,72 @@ program
       let astContext = "";
       let diff = "";
       let reportMarkdown = "";
+      let label: string;
+
+      if (options.diff) {
+        let files: string[];
+        try {
+          files = getChangedFiles(options.diff);
+        } catch (error) {
+          console.error(error instanceof Error ? error.message : String(error));
+          process.exitCode = 1;
+          return;
+        }
+        if (files.length === 0) {
+          clack.outro(`No changed .ts/.tsx files found vs ${options.diff}`);
+          return;
+        }
+
+        label = `${files.length} file(s) changed vs ${options.diff}`;
+        const diffTarget = options.diff;
+
+        await clack.tasks([
+          {
+            title: `Parse AST for ${files.length} file(s)`,
+            task: () => {
+              astContext = files.map((f) => summaryToMarkdown(parseFile(f))).join("\n\n---\n\n");
+              return "AST extracted";
+            },
+          },
+          {
+            title: `Compute diff vs ${diffTarget}`,
+            task: () => {
+              diff = getDiffAgainstTarget(diffTarget, files);
+              return "Diff ready";
+            },
+          },
+        ]);
+      } else {
+        label = file as string;
+
+        await clack.tasks([
+          {
+            title: "Parse AST",
+            task: () => {
+              astContext = summaryToMarkdown(parseFile(label));
+              return "AST extracted";
+            },
+          },
+          {
+            title: "Compute diff",
+            task: () => {
+              diff = getFileDiff(label);
+              return "Diff ready";
+            },
+          },
+        ]);
+      }
 
       await clack.tasks([
-        {
-          title: "Parse AST",
-          task: () => {
-            astContext = summaryToMarkdown(parseFile(file));
-            return "AST extracted";
-          },
-        },
-        {
-          title: "Compute diff",
-          task: () => {
-            diff = getFileDiff(file);
-            return "Diff ready";
-          },
-        },
         {
           title: `Run AI review pipeline (${options.provider})`,
           task: async (message) => {
             const result = await runReviewPipeline(
-              { filePath: file, astContext, diff, provider: options.provider },
+              { filePath: label, astContext, diff, provider: options.provider },
               (stage) => message(STAGE_MESSAGES[stage]),
             );
             reportMarkdown = buildReportMarkdown({
-              filePath: file,
+              filePath: label,
               provider: options.provider,
               result,
             });

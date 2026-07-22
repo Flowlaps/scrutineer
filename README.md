@@ -48,7 +48,13 @@ scrutineer review ./src/index.ts --pr 42               # post the report as a PR
 scrutineer parse ./src/index.ts --json                 # just the AST extraction, no model call
 ```
 
-> Scrutineer reviews one file at a time — for a whole MR, run it once per changed file.
+Review every changed file against a git ref in one batch, instead of naming a file — useful in a pre-push hook or CI:
+
+```bash
+scrutineer review --diff origin/main
+```
+
+This resolves `git diff --name-only origin/main...HEAD` internally, filters it to `.ts`/`.tsx` files, and sends all of them to the review swarm as a single batch call so findings can reference across files. `--diff` and a file argument are mutually exclusive — pass one or the other.
 
 ## Configuration
 
