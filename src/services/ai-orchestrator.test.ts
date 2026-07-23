@@ -75,8 +75,11 @@ function resetState(): void {
 
 function classify(system: GenerateTextOpts["system"]): Kind {
   const text = systemParts(system)[0]?.content ?? "";
-  if (text === "CODE_REVIEWER_SYSTEM") return "code-reviewer";
-  if (text === "SECURITY_AUDITOR_SYSTEM") return "security-auditor";
+  // The base persona part now has the output-efficiency instructions folded into
+  // the same cached string (see the comment on basePart in runPersona()), so this
+  // is a prefix match rather than exact equality.
+  if (text.startsWith("CODE_REVIEWER_SYSTEM")) return "code-reviewer";
+  if (text.startsWith("SECURITY_AUDITOR_SYSTEM")) return "security-auditor";
   return "test-generator";
 }
 
@@ -511,27 +514,28 @@ test("injects nothing when no changed file matches a dynamic skill category", as
   assert.doesNotMatch(byKind["security-auditor"]!.systemText, /Dynamic Skill/);
 });
 
-test("keeps the persona's base prompt as its own cache breakpoint, separate from the dynamic skill additions", async () => {
+test("keeps the persona's base prompt (now including the folded-in output-efficiency instructions) as its own cache breakpoint, separate from the dynamic skill additions", async () => {
   resetState();
 
   await runReviewPipeline({ ...baseInput, changedFiles: ["src/app/page.tsx"] });
 
-  // The base persona prompt (part 0) is cache-controlled independently of
-  // whatever dynamic additions get appended (part 1, uncached — those vary per
-  // diff, so caching them would pay a cache-write cost for content unlikely to
-  // be reused across runs); the fixed output-efficiency instructions (part 2)
-  // are identical on every call, so they get their own cache breakpoint too.
+  // The base persona prompt (part 0, now with OUTPUT_EFFICIENCY_INSTRUCTIONS
+  // folded into the same cached string — see the comment on basePart in
+  // runPersona()) is cache-controlled independently of whatever dynamic
+  // additions get appended (part 1, uncached — those vary per diff, so caching
+  // them would pay a cache-write cost for content unlikely to be reused across
+  // runs).
   const codeReviewer = calls.find((c) => c.kind === "code-reviewer")!;
-  assert.deepEqual(codeReviewer.systemPartCacheControl, [true, false, true]);
+  assert.deepEqual(codeReviewer.systemPartCacheControl, [true, false]);
 });
 
-test("keeps the persona system prompt and the fixed output-efficiency instructions as two cache-controlled parts when no dynamic skill category is triggered", async () => {
+test("keeps the persona system prompt as a single cache-controlled part when no dynamic skill category is triggered", async () => {
   resetState();
 
   await runReviewPipeline(baseInput);
 
   const codeReviewer = calls.find((c) => c.kind === "code-reviewer")!;
-  assert.deepEqual(codeReviewer.systemPartCacheControl, [true, true]);
+  assert.deepEqual(codeReviewer.systemPartCacheControl, [true]);
 });
 
 test("appends output-efficiency instructions to both review personas, but not to test-generation (whose output is executable JS, not prose)", async () => {
@@ -545,6 +549,20 @@ test("appends output-efficiency instructions to both review personas, but not to
   assert.doesNotMatch(byKind["test-generator"]!.systemText, /Output Efficiency/);
 });
 
+test("resolveMaxOutputTokens: base case, linear scaling, zero/negative-safe input, and the ceiling clamp", () => {
+  // Hardcoded literals rather than deriving "expected" from the function under
+  // test itself, so a regression in the constants (BASE_OUTPUT_TOKENS,
+  // PER_ADDITIONAL_FILE_OUTPUT_TOKENS, OUTPUT_TOKENS_CEILING) actually fails
+  // this test instead of just being self-consistent with a changed formula.
+  assert.equal(resolveMaxOutputTokens(0), 4096, "0 files (not reachable today, but shouldn't crash or go negative)");
+  assert.equal(resolveMaxOutputTokens(1), 4096, "single-file review keeps the pre-#33 default");
+  assert.equal(resolveMaxOutputTokens(2), 4352, "one additional file adds exactly one PER_ADDITIONAL_FILE increment");
+  assert.equal(resolveMaxOutputTokens(17), 8192, "the 17-file batch from issue #33's repro");
+  assert.equal(resolveMaxOutputTokens(49), 16384, "unclamped formula lands exactly on the ceiling at 49 files");
+  assert.equal(resolveMaxOutputTokens(50), 16384, "50 files would exceed the ceiling unclamped — proves Math.min is actually clamping, not coincidentally equal");
+  assert.equal(resolveMaxOutputTokens(500), 16384, "a pathological batch size stays clamped at the ceiling");
+});
+
 test("scales the output token cap with the number of changed files in the --diff batch, instead of a flat constant, and shares it across all three calls", async () => {
   resetState();
 
@@ -553,34 +571,29 @@ test("scales the output token cap with the number of changed files in the --diff
     changedFiles: Array.from({ length: 17 }, (_, i) => `src/file${i}.ts`),
   });
 
-  const expected = resolveMaxOutputTokens(17);
-  // The 17-file batch from issue #33 that motivated this: BASE_OUTPUT_TOKENS
-  // (4096) + 16 additional files should push the cap comfortably above the old
-  // flat 4096 constant that silently produced an empty review.
-  assert.ok(expected > 4096, `expected the scaled cap for 17 files (${expected}) to exceed the old flat 4096`);
+  // 4096 (base) + 16 additional files * 256 = 8192 — the 17-file batch from
+  // issue #33 that silently produced an empty review under the old flat 4096 cap.
   for (const call of calls) {
-    assert.equal(call.maxOutputTokens, expected, `${call.kind} call should use the scaled cap`);
+    assert.equal(call.maxOutputTokens, 8192, `${call.kind} call should use the scaled cap`);
   }
 });
 
-test("caps the scaled output token budget at a fixed ceiling instead of growing without bound for a pathological batch size", async () => {
+test("caps the scaled output token budget at a fixed 16384 ceiling instead of growing without bound for a pathological batch size", async () => {
   resetState();
 
   await runReviewPipeline({ ...baseInput, changedFiles: Array.from({ length: 500 }, (_, i) => `file${i}.ts`) });
 
-  const expected = resolveMaxOutputTokens(500);
   assert.ok(calls.length > 0);
   for (const call of calls) {
-    assert.equal(call.maxOutputTokens, expected);
+    assert.equal(call.maxOutputTokens, 16384);
   }
 });
 
-test("uses the base output token cap for a single-file review, matching the pre-#33 default", async () => {
+test("uses the base output token cap (4096) for a single-file review, matching the pre-#33 default", async () => {
   resetState();
 
   await runReviewPipeline(baseInput);
 
-  assert.equal(resolveMaxOutputTokens(1), 4096);
   for (const call of calls) {
     assert.equal(call.maxOutputTokens, 4096);
   }

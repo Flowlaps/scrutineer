@@ -273,19 +273,24 @@ async function runPersona(
   // dynamic skill additions (see skill-router.ts) — those vary per diff, so
   // folding them into the same string would tie the persona's cache hit rate
   // to reviews repeatedly touching the same file-type categories, instead of
-  // any two reviews using the same persona regardless of what changed.
+  // any two reviews using the same persona regardless of what changed. The
+  // efficiency instructions, by contrast, are fixed scrutineer-authored text
+  // identical on every call, so they're folded directly into this same cached
+  // string rather than given their own breakpoint: at ~90 tokens on their own
+  // they'd sit under Anthropic's documented minimum cacheable segment size for
+  // Sonnet/Opus-class models (1024 tokens), leaving it ambiguous whether a
+  // trailing breakpoint that small actually gets cached. Riding along with the
+  // (much larger) persona prompt sidesteps that question entirely.
   const basePart: SystemModelMessage = cacheControl
-    ? { role: "system", content: persona.systemPrompt, providerOptions: cacheControl }
-    : { role: "system", content: persona.systemPrompt };
-  // The efficiency instructions are fixed scrutineer-authored text (identical on
-  // every call, unlike the dynamic skill additions), so they get their own cache
-  // breakpoint too rather than riding along uncached.
-  const efficiencyPart: SystemModelMessage = cacheControl
-    ? { role: "system", content: OUTPUT_EFFICIENCY_INSTRUCTIONS, providerOptions: cacheControl }
-    : { role: "system", content: OUTPUT_EFFICIENCY_INSTRUCTIONS };
+    ? {
+        role: "system",
+        content: `${persona.systemPrompt}\n\n${OUTPUT_EFFICIENCY_INSTRUCTIONS}`,
+        providerOptions: cacheControl,
+      }
+    : { role: "system", content: `${persona.systemPrompt}\n\n${OUTPUT_EFFICIENCY_INSTRUCTIONS}` };
   const system: Instructions = additionalInstructions
-    ? [basePart, { role: "system", content: additionalInstructions }, efficiencyPart]
-    : [basePart, efficiencyPart];
+    ? [basePart, { role: "system", content: additionalInstructions }]
+    : basePart;
   let text: string;
   let usage: LanguageModelUsage;
   let finishReason: FinishReason;
