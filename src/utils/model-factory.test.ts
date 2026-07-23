@@ -60,6 +60,30 @@ test("createModel(anthropic) respects SCRUTINEER_MODEL_ANTHROPIC", async (t) => 
   assert.equal(modelId(model), "claude-opus-4-8");
 });
 
+test("createModel(openai) uses the default model ID with no override", async (t) => {
+  withEnv(t, "SCRUTINEER_MODEL_OPENAI", undefined);
+  const model = await createModel("openai");
+  assert.equal(modelId(model), "gpt-4o-mini");
+});
+
+test("createModel(openai) respects SCRUTINEER_MODEL_OPENAI", async (t) => {
+  withEnv(t, "SCRUTINEER_MODEL_OPENAI", "gpt-4o");
+  const model = await createModel("openai");
+  assert.equal(modelId(model), "gpt-4o");
+});
+
+test("createModel(gemini) uses the default model ID with no override", async (t) => {
+  withEnv(t, "SCRUTINEER_MODEL_GEMINI", undefined);
+  const model = await createModel("gemini");
+  assert.equal(modelId(model), "gemini-flash-latest");
+});
+
+test("createModel(gemini) respects SCRUTINEER_MODEL_GEMINI", async (t) => {
+  withEnv(t, "SCRUTINEER_MODEL_GEMINI", "gemini-1.5-pro");
+  const model = await createModel("gemini");
+  assert.equal(modelId(model), "gemini-1.5-pro");
+});
+
 test("createModel(ollama) respects SCRUTINEER_MODEL_OLLAMA without querying Ollama", async (t) => {
   withEnv(t, "SCRUTINEER_MODEL_OLLAMA", "phi4");
   withMockFetch(t, (async () => {

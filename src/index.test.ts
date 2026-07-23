@@ -15,6 +15,19 @@ test("scrutineer review --help documents the SCRUTINEER_MODEL_* env vars", () =>
 
   assert.match(output, /SCRUTINEER_MODEL_ANTHROPIC/);
   assert.match(output, /SCRUTINEER_MODEL_OLLAMA/);
+  assert.match(output, /SCRUTINEER_MODEL_OPENAI/);
+  assert.match(output, /SCRUTINEER_MODEL_GEMINI/);
+});
+
+test("scrutineer review --provider accepts openai and gemini", () => {
+  const output = execFileSync(
+    process.execPath,
+    ["--import", "tsx", "src/index.ts", "review", "--help"],
+    { cwd: repoRoot, encoding: "utf-8" },
+  );
+
+  assert.match(output, /"openai"/);
+  assert.match(output, /"gemini"/);
 });
 
 test("scrutineer review --help documents --diff", () => {

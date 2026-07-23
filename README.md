@@ -62,11 +62,15 @@ Scrutineer reads all credentials and overrides from environment variables in wha
 
 | Variable | Required | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Yes, for `--provider anthropic` (the default) | API key used to call Claude. Not needed with `--provider ollama`. |
+| `ANTHROPIC_API_KEY` | Yes, for `--provider anthropic` (the default) | API key used to call Claude. Not needed with `--provider ollama`, `--provider openai`, or `--provider gemini`. |
+| `OPENAI_API_KEY` | Yes, for `--provider openai` | API key used to call OpenAI. |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Yes, for `--provider gemini` | API key used to call Gemini. |
 | `GITHUB_TOKEN` | Only for `scrutineer review --pr <number>` | Personal access token with permission to comment on the repo's PRs. |
 | `OLLAMA_HOST` | No | Overrides the Ollama server address (defaults to `http://127.0.0.1:11434`). Scrutineer warns on stderr if this isn't a loopback address, since review content is sent to whatever host it points at. |
 | `SCRUTINEER_MODEL_ANTHROPIC` | No | Overrides the default Anthropic model (`claude-sonnet-5`). |
 | `SCRUTINEER_MODEL_OLLAMA` | No | Overrides the default Ollama model (auto-detected from what's running locally, falling back to `phi4`). |
+| `SCRUTINEER_MODEL_OPENAI` | No | Overrides the default OpenAI model (`gpt-4o-mini`). |
+| `SCRUTINEER_MODEL_GEMINI` | No | Overrides the default Gemini model (`gemini-flash-latest`). |
 
 **Local shell** — export vars directly, or drop them in a `.env` file (copy `.env.example` to `.env` and fill it in):
 

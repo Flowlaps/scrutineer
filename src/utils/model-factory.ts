@@ -1,14 +1,18 @@
 import { anthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOllama } from "ollama-ai-provider-v2";
 import type { LanguageModel } from "ai";
 
-export type ProviderId = "anthropic" | "ollama";
+export type ProviderId = "anthropic" | "ollama" | "openai" | "gemini";
 
-export const PROVIDER_IDS: readonly ProviderId[] = ["anthropic", "ollama"];
+export const PROVIDER_IDS: readonly ProviderId[] = ["anthropic", "ollama", "openai", "gemini"];
 
 const DEFAULT_MODEL_ID: Record<ProviderId, string> = {
   anthropic: "claude-sonnet-5",
   ollama: "phi4",
+  openai: "gpt-4o-mini",
+  gemini: "gemini-flash-latest",
 };
 
 // Scoped per provider so an override set for one provider (e.g. a pinned Anthropic
@@ -17,6 +21,8 @@ const DEFAULT_MODEL_ID: Record<ProviderId, string> = {
 export const MODEL_ENV_VAR: Record<ProviderId, string> = {
   anthropic: "SCRUTINEER_MODEL_ANTHROPIC",
   ollama: "SCRUTINEER_MODEL_OLLAMA",
+  openai: "SCRUTINEER_MODEL_OPENAI",
+  gemini: "SCRUTINEER_MODEL_GEMINI",
 };
 
 const DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434";
@@ -123,6 +129,14 @@ export async function createModel(provider: ProviderId): Promise<LanguageModel> 
   switch (provider) {
     case "anthropic":
       return anthropic(override ?? DEFAULT_MODEL_ID.anthropic);
+    case "openai": {
+      const openai = createOpenAI();
+      return openai(override ?? DEFAULT_MODEL_ID.openai);
+    }
+    case "gemini": {
+      const google = createGoogleGenerativeAI();
+      return google(override ?? DEFAULT_MODEL_ID.gemini);
+    }
     case "ollama": {
       const baseUrl = resolveOllamaBaseUrl();
       if (!isLoopbackUrl(baseUrl)) {

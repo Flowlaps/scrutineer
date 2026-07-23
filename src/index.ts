@@ -77,6 +77,8 @@ program
     "\nEnvironment variables:\n" +
       `  ${MODEL_ENV_VAR.anthropic}   override the default model for --provider anthropic\n` +
       `  ${MODEL_ENV_VAR.ollama}      override the default model for --provider ollama\n` +
+      `  ${MODEL_ENV_VAR.openai}    override the default model for --provider openai\n` +
+      `  ${MODEL_ENV_VAR.gemini}    override the default model for --provider gemini\n` +
       "  See .env.example for the current defaults and other supported variables.",
   )
   .action(async (file: string | undefined, options: ReviewOptions) => {

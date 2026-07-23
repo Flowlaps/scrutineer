@@ -43,6 +43,8 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.15",
+    "@ai-sdk/google": "^4.0.22",
+    "@ai-sdk/openai": "^4.0.18",
     "@clack/prompts": "1.7.0",
     "ai": "^7.0.29",
     "commander": "^13.1.0",
