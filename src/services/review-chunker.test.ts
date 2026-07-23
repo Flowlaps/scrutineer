@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chunkChangedFiles, MAX_FILES_PER_CHUNK } from "./review-chunker.js";
+import { chunkChangedFiles, exceedsMaxTotalFiles, MAX_FILES_PER_CHUNK, MAX_TOTAL_FILES } from "./review-chunker.js";
 
 test("returns an empty array for an empty file list", () => {
   assert.deepEqual(chunkChangedFiles([]), []);
@@ -47,4 +47,14 @@ test("preserves file order across chunk boundaries instead of reordering", () =>
   const files = Array.from({ length: 15 }, (_, i) => `file${i}.ts`);
   const chunks = chunkChangedFiles(files, 10);
   assert.deepEqual(chunks.flat(), files);
+});
+
+test("exceedsMaxTotalFiles is false at and under the limit, true just over it", () => {
+  assert.equal(exceedsMaxTotalFiles(Array.from({ length: 300 }, (_, i) => `f${i}.ts`), 300), false);
+  assert.equal(exceedsMaxTotalFiles(Array.from({ length: 301 }, (_, i) => `f${i}.ts`), 300), true);
+});
+
+test("exceedsMaxTotalFiles uses MAX_TOTAL_FILES as its default", () => {
+  assert.equal(exceedsMaxTotalFiles(Array.from({ length: MAX_TOTAL_FILES }, (_, i) => `f${i}.ts`)), false);
+  assert.equal(exceedsMaxTotalFiles(Array.from({ length: MAX_TOTAL_FILES + 1 }, (_, i) => `f${i}.ts`)), true);
 });

@@ -196,7 +196,7 @@ mock.module("./sandbox.js", {
   },
 });
 
-const { runReviewPipeline, resolveMaxOutputTokens, runChunkedReviewPipeline, MAX_CONCURRENT_CHUNKS } =
+const { runReviewPipeline, resolveMaxOutputTokens, runChunkedReviewPipeline, MAX_CONCURRENT_CHUNKS, mapWithConcurrencyLimit } =
   await import("./ai-orchestrator.js");
 
 const baseInput = {
@@ -713,6 +713,45 @@ test("processes chunks concurrently, bounded by MAX_CONCURRENT_CHUNKS, for a non
     maxObservedPersonaConcurrency <= MAX_CONCURRENT_CHUNKS,
     `expected peak concurrent persona calls (${maxObservedPersonaConcurrency}) to stay within MAX_CONCURRENT_CHUNKS (${MAX_CONCURRENT_CHUNKS})`,
   );
+});
+
+test("mapWithConcurrencyLimit stops dispatching new work once the signal is aborted, instead of draining every remaining item", async () => {
+  const controller = new AbortController();
+  const dispatched: number[] = [];
+  const items = Array.from({ length: 30 }, (_, i) => i);
+
+  const call = mapWithConcurrencyLimit(
+    items,
+    3,
+    async (item, index) => {
+      dispatched.push(index);
+      if (index === 0) {
+        // The first item to run fails, aborting the shared controller — but
+        // not until 10ms in, giving the other two initial workers (indices 1
+        // and 2) plenty of time to finish their own fast items and loop back
+        // for more *before* the abort fires, exactly the scenario where a
+        // pool without the abort check would keep dispatching new work.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        controller.abort(new Error("item 0 failed"));
+        throw new Error("item 0 failed");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      return item;
+    },
+    controller.signal,
+  );
+
+  await assert.rejects(call, /item 0 failed/);
+  // Give any worker that was already mid-item when the abort fired a moment
+  // to loop back and (correctly) find nothing left to do, or (if the fix
+  // regressed) keep dispatching further items despite the abort.
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  assert.ok(
+    dispatched.length < items.length,
+    `expected the pool to stop well short of all ${items.length} items once aborted, dispatched: ${dispatched.length}`,
+  );
+  assert.equal(new Set(dispatched).size, dispatched.length, "no item should have been dispatched more than once");
 });
 
 test("processes chunks strictly sequentially for the ollama provider, to avoid contending with its single local model process (GH #22)", async () => {

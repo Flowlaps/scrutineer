@@ -14,7 +14,12 @@ import {
 import { buildReportMarkdown } from "./services/report.js";
 import { getRepoSlugFromGit, postPrComment } from "./services/github-client.js";
 import { createModel, getModelId, MODEL_ENV_VAR, PROVIDER_IDS, type ProviderId } from "./utils/model-factory.js";
-import { chunkChangedFiles, MAX_FILES_PER_CHUNK } from "./services/review-chunker.js";
+import {
+  chunkChangedFiles,
+  exceedsMaxTotalFiles,
+  MAX_FILES_PER_CHUNK,
+  MAX_TOTAL_FILES,
+} from "./services/review-chunker.js";
 
 const program = new Command();
 
@@ -156,6 +161,15 @@ program
         }
         if (files.length === 0) {
           clack.outro(`No changed files worth reviewing found vs ${options.diff}`);
+          return;
+        }
+        if (exceedsMaxTotalFiles(files)) {
+          console.error(
+            `scrutineer: this --diff batch touches ${files.length} files, over the ${MAX_TOTAL_FILES}-file limit ` +
+              "for a single review run. Narrow the diff (e.g. review against a closer ref, or review specific " +
+              "files individually) instead of triggering an unbounded number of AI calls.",
+          );
+          process.exitCode = 1;
           return;
         }
 

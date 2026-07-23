@@ -426,18 +426,11 @@ export async function runReviewPipeline(
     sandboxTestPromise = startSandboxTest();
   }
 
-  let codeReview: string;
-  try {
-    codeReview = await codeReviewPromise;
-  } catch (error) {
-    controller.abort(error);
-    throw error;
-  }
+  const codeReview = await withAbortOnFailure(controller, () => codeReviewPromise);
 
   onProgress?.("security-audit");
-  let securityAudit: string;
-  try {
-    securityAudit = await runPersona(
+  const securityAudit = await withAbortOnFailure(controller, () =>
+    runPersona(
       model,
       input.provider,
       securityAuditor,
@@ -446,11 +439,8 @@ export async function runReviewPipeline(
       buildUserMessage(cacheableSection, input.provider, codeReview),
       controller.signal,
       maxOutputTokens,
-    );
-  } catch (error) {
-    controller.abort(error);
-    throw error;
-  }
+    ),
+  );
 
   if (!sandboxTestPromise) {
     onProgress?.("sandbox-test");
@@ -487,10 +477,23 @@ export interface ChunkedReviewInput {
   // single sandbox-test call below, which (per issue #33's own data) was never
   // close to its output budget even at 17 files, so it stays a single call
   // covering the whole batch rather than being chunked like the two personas.
+  // Known, accepted gap (not addressed by this PR): unlike the chunked
+  // code-review/security-audit calls, this content is NOT scoped down, so a
+  // genuinely huge batch can still hit MAX_SECTION_CHARS's input-side
+  // truncation on this one call — same as every review before #35, not a
+  // regression, and still surfaced via truncate()'s existing warning/marker,
+  // just not solved by chunking here.
   fullAstContext: string;
   fullDiff: string;
   changedFiles: string[];
   chunks: ReviewChunk[];
+}
+
+// Named to avoid repeating this shape as an inline anonymous type at every
+// call site that produces or consumes one chunk's persona results.
+export interface ChunkReviewPair {
+  codeReview: string;
+  securityAudit: string;
 }
 
 export interface ChunkedReviewProgressEvent {
@@ -517,21 +520,45 @@ export const MAX_CONCURRENT_CHUNKS = 3;
 // "workers" each pull the next unprocessed index until none remain, rather
 // than batching in fixed-size groups, so a fast chunk doesn't sit idle waiting
 // for a slower sibling in the same batch before the pool picks up new work.
-async function mapWithConcurrencyLimit<T, R>(
+//
+// `signal` is checked before each new dispatch (not just passed through to
+// `worker` for its own call): once one item's failure has aborted the shared
+// controller, the run is already doomed, so idle workers stop picking up
+// further items instead of firing calls whose result will only be discarded
+// when the caller's Promise.all/try-catch rejects anyway. Exported so
+// ai-orchestrator.test.ts can exercise this abort-race directly with a fake,
+// precisely-timed worker instead of fighting the "ai" mock's per-call-kind
+// (not per-chunk) control granularity.
+export async function mapWithConcurrencyLimit<T, R>(
   items: T[],
   concurrency: number,
   worker: (item: T, index: number) => Promise<R>,
+  signal?: AbortSignal,
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let nextIndex = 0;
   async function runWorker(): Promise<void> {
-    while (nextIndex < items.length) {
+    while (nextIndex < items.length && !signal?.aborted) {
       const index = nextIndex++;
       results[index] = await worker(items[index] as T, index);
     }
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, runWorker));
   return results;
+}
+
+// Shared by runReviewPipeline and runChunkedReviewPipeline: on failure, aborts
+// the run's shared AbortController before rethrowing, so any sibling call
+// already in flight gets cancelled instead of running to completion
+// unobserved. Centralizes the try/abort/rethrow shape that would otherwise be
+// repeated at every call site that needs it.
+async function withAbortOnFailure<T>(controller: AbortController, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    controller.abort(error);
+    throw error;
+  }
 }
 
 // The chunked counterpart to runReviewPipeline, for --diff batches too large
@@ -561,10 +588,7 @@ export async function runChunkedReviewPipeline(
   // "retry only the failed chunk" is a reasonable separate follow-up.
   const controller = new AbortController();
 
-  async function runChunkReviewPair(
-    chunk: ReviewChunk,
-    chunkIndex: number,
-  ): Promise<{ codeReview: string; securityAudit: string }> {
+  async function runChunkReviewPair(chunk: ReviewChunk, chunkIndex: number): Promise<ChunkReviewPair> {
     const chunkInput: ReviewInput = {
       filePath: chunk.label,
       astContext: chunk.astContext,
@@ -587,9 +611,8 @@ export async function runChunkedReviewPipeline(
     const chunkCount = input.chunks.length;
 
     onProgress?.({ stage: "code-review", chunkIndex: chunkIndex + 1, chunkCount });
-    let codeReview: string;
-    try {
-      codeReview = await runPersona(
+    const codeReview = await withAbortOnFailure(controller, () =>
+      runPersona(
         input.model,
         input.provider,
         codeReviewer,
@@ -598,16 +621,12 @@ export async function runChunkedReviewPipeline(
         buildUserMessage(cacheableSection, input.provider),
         controller.signal,
         maxOutputTokens,
-      );
-    } catch (error) {
-      controller.abort(error);
-      throw error;
-    }
+      ),
+    );
 
     onProgress?.({ stage: "security-audit", chunkIndex: chunkIndex + 1, chunkCount });
-    let securityAudit: string;
-    try {
-      securityAudit = await runPersona(
+    const securityAudit = await withAbortOnFailure(controller, () =>
+      runPersona(
         input.model,
         input.provider,
         securityAuditor,
@@ -616,11 +635,8 @@ export async function runChunkedReviewPipeline(
         buildUserMessage(cacheableSection, input.provider, codeReview),
         controller.signal,
         maxOutputTokens,
-      );
-    } catch (error) {
-      controller.abort(error);
-      throw error;
-    }
+      ),
+    );
 
     return { codeReview, securityAudit };
   }
@@ -665,28 +681,34 @@ export async function runChunkedReviewPipeline(
   // Same ollama-vs-other-providers split as runReviewPipeline: a concurrent
   // generateText call against ollama's single local model process contends
   // with the chunk calls and was observed to intermittently fail (GH #22).
+  // Mirrors runReviewPipeline's pre-existing provider branching rather than
+  // centralizing it — ADR-0001 states orchestration code shouldn't branch on
+  // provider, but runReviewPipeline already does exactly this (since the
+  // GH #22 fix, before issue #35), so this isn't a new divergence introduced
+  // here. Centralizing provider-aware scheduling across both functions is a
+  // reasonable follow-up, tracked separately (issue #37) rather than folded
+  // into this fix.
   let sandboxTestPromise: Promise<SandboxTestOutcome> | undefined;
   if (input.provider !== "ollama") {
     onProgress?.({ stage: "sandbox-test" });
     sandboxTestPromise = startSandboxTest();
   }
 
-  let chunkResults: Array<{ codeReview: string; securityAudit: string }>;
-  try {
+  const chunkResults = await withAbortOnFailure(controller, async () => {
     if (input.provider === "ollama") {
-      chunkResults = [];
+      const results: ChunkReviewPair[] = [];
       for (let i = 0; i < input.chunks.length; i++) {
-        chunkResults.push(await runChunkReviewPair(input.chunks[i] as ReviewChunk, i));
+        results.push(await runChunkReviewPair(input.chunks[i] as ReviewChunk, i));
       }
-    } else {
-      chunkResults = await mapWithConcurrencyLimit(input.chunks, MAX_CONCURRENT_CHUNKS, (chunk, index) =>
-        runChunkReviewPair(chunk, index),
-      );
+      return results;
     }
-  } catch (error) {
-    controller.abort(error);
-    throw error;
-  }
+    return mapWithConcurrencyLimit(
+      input.chunks,
+      MAX_CONCURRENT_CHUNKS,
+      (chunk, index) => runChunkReviewPair(chunk, index),
+      controller.signal,
+    );
+  });
 
   if (!sandboxTestPromise) {
     onProgress?.({ stage: "sandbox-test" });
@@ -695,7 +717,7 @@ export async function runChunkedReviewPipeline(
 
   const sandboxTest = await sandboxTestPromise;
 
-  function aggregate(sectionOf: (result: { codeReview: string; securityAudit: string }) => string): string {
+  function aggregate(sectionOf: (result: ChunkReviewPair) => string): string {
     return chunkResults
       .map((result, i) => {
         const chunk = input.chunks[i] as ReviewChunk;

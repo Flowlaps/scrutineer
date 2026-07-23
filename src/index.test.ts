@@ -208,3 +208,41 @@ test("scrutineer review --diff splits a batch bigger than MAX_FILES_PER_CHUNK in
   assert.ok(elapsedMs < 15_000, `expected a prompt offline failure, took ${elapsedMs}ms`);
   assert.match(combinedOutput, /Batch split into 2 review chunks/);
 });
+
+test("scrutineer review --diff refuses a batch over the total-file limit instead of triggering an unbounded number of AI calls (GH #36 review)", (t) => {
+  const dir = setupManyChangedFilesRepo(t, 301); // one over the 300-file MAX_TOTAL_FILES default
+  const scriptPath = path.join(repoRoot, "src/index.ts");
+
+  let status: number | null;
+  let combinedOutput: string;
+  try {
+    const stdout = execFileSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "review", "--diff", "main", "--provider", "ollama"],
+      {
+        cwd: repoRoot,
+        encoding: "utf-8",
+        env: {
+          ...process.env,
+          GIT_DIR: join(dir, ".git"),
+          GIT_WORK_TREE: dir,
+          OLLAMA_HOST: "http://127.0.0.1:1",
+        },
+        timeout: 30_000,
+        killSignal: "SIGKILL",
+      },
+    );
+    status = 0;
+    combinedOutput = stdout;
+  } catch (error) {
+    const e = error as { status: number | null; stdout: string; stderr: string };
+    status = e.status;
+    combinedOutput = e.stdout + e.stderr;
+  }
+
+  assert.equal(status, 1);
+  assert.match(combinedOutput, /over the 300-file limit/);
+  // Refused before ever getting to chunk/review the batch — proves this is an
+  // upfront rejection, not a failed-partway-through run.
+  assert.doesNotMatch(combinedOutput, /Batch split into/);
+});
