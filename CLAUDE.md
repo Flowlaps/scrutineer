@@ -142,6 +142,16 @@ Prevent LLM hallucination and context-window bloat by dynamically composing the 
 7. Verify `npm run typecheck`, `npm run build`, and `npm test` pass.
 8. Push the branch and open a PR per the standard workflow.
 
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (`flowlaps/scrutineer`), managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context layout — `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
 ## Agent Skills Policy
 Use agent skills library selectively, keeping the context window focused:
 - **Match the Skill to the Task**: Pick whichever installed skill best fits the work at hand rather than following a fixed branch-to-skill mapping.
