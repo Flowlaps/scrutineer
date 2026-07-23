@@ -62,7 +62,8 @@ const DEPENDENCY_AND_ENV_AUDIT = `## Dynamic Skill: Dependency & Environment Aud
 This diff touches configuration files. In addition to your standard audit, specifically check for:
 - New or updated dependencies with known vulnerabilities or excessive install-time scripts
 - Environment variables introduced without validation, defaults, or documentation
-- Configuration changes that widen network/filesystem access or weaken security settings`;
+- Configuration changes that widen network/filesystem access or weaken security settings
+- A lockfile changed without a corresponding \`package.json\` change, or vice versa — one may be stale relative to the other`;
 
 export interface DynamicSkillInstructions {
   codeReviewerAdditions: string;

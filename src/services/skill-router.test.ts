@@ -47,7 +47,12 @@ test("detects lockfiles (pnpm-lock.yaml, package-lock.json, yarn.lock) as config
 });
 
 test("combines instructions across categories when a batch touches multiple file types", () => {
-  const result = buildDynamicSkillInstructions(["src/app/page.tsx", "src/app/api/route.ts", "package.json"]);
+  const result = buildDynamicSkillInstructions([
+    "src/app/page.tsx",
+    "src/app/api/route.ts",
+    "package.json",
+    "pnpm-lock.yaml",
+  ]);
 
   assert.deepEqual(result.triggeredCategories, ["frontend", "backend", "config"]);
   assert.match(result.codeReviewerAdditions, /React Architecture/);

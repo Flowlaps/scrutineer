@@ -32,6 +32,8 @@ function setupRepo(t: import("node:test").TestContext): string {
   writeFileSync(join(dir, "next.config.js"), "module.exports = {};\n");
   writeFileSync(join(dir, "migration.sql"), "ALTER TABLE users ADD COLUMN email TEXT;\n");
   writeFileSync(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+  writeFileSync(join(dir, "package-lock.json"), '{"lockfileVersion":3}\n');
+  writeFileSync(join(dir, "yarn.lock"), "# yarn lockfile v1\n");
   git(dir, ["add", "."]);
   git(dir, ["commit", "-m", "feature work"]);
 
@@ -45,9 +47,11 @@ test("getChangedFiles returns the changed .ts/.tsx files vs the target ref", (t)
     "base.ts",
     "migration.sql",
     "next.config.js",
+    "package-lock.json",
     "package.json",
     "pnpm-lock.yaml",
     "widget.tsx",
+    "yarn.lock",
   ]);
 });
 
@@ -58,6 +62,8 @@ test("getChangedFiles also keeps dynamic-skill trigger filenames (package.json, 
   assert.ok(files.includes("next.config.js"));
   assert.ok(files.includes("migration.sql"));
   assert.ok(files.includes("pnpm-lock.yaml"));
+  assert.ok(files.includes("package-lock.json"));
+  assert.ok(files.includes("yarn.lock"));
   assert.ok(!files.includes("notes.md"));
   assert.ok(!files.includes("script.js"));
 });
