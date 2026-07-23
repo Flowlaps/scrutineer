@@ -100,6 +100,19 @@ Remove the burden of writing complex bash `pre-push` hooks by moving Git diff re
 5. The command should parse the AST for all files in the diff and send them to the agent swarm as a single batch for cross-file context.
 6. Follow standard workflow around verification and open a PR.
 
+## Phase 10: Multi-Provider Support (OpenAI & Gemini)
+
+Expand the AI orchestration layer beyond Anthropic and Ollama to also support OpenAI and Google Gemini, proving out the Vercel AI SDK Model Factory's provider-agnostic design and avoiding vendor lock-in.
+
+1. Create a new branch for Phase 10.
+2. Install `@ai-sdk/openai` and `@ai-sdk/google`.
+3. Update `src/utils/model-factory.ts` to route to `createOpenAI` and `createGoogleGenerativeAI` based on the provider string, alongside the existing `anthropic`/`ollama` cases, and add `openai`/`gemini` to `PROVIDER_IDS`.
+4. Extend the `--provider <type>` flag's choices (`commander`) to include `openai` and `gemini`, keeping `anthropic` as the default so existing users and scripts aren't affected.
+5. Follow the existing model-override convention: add `SCRUTINEER_MODEL_OPENAI` and `SCRUTINEER_MODEL_GEMINI` env vars (mirroring `SCRUTINEER_MODEL_ANTHROPIC`/`SCRUTINEER_MODEL_OLLAMA`) so a specific model can be selected per provider — there is no `--model` CLI flag today, so don't introduce one here.
+6. Update `README.md`'s Configuration section to list `OPENAI_API_KEY` and `GOOGLE_GENERATIVE_AI_API_KEY` alongside the existing required/optional env vars.
+7. Verify `npm run typecheck`, `npm run build`, and `npm test` pass, and manually confirm `scrutineer review <file> --provider openai` and `--provider gemini` both complete a real review.
+8. Push the branch and open a PR per the standard workflow.
+
 ## Agent Skills Policy
 Use agent skills library selectively, keeping the context window focused:
 - **Match the Skill to the Task**: Pick whichever installed skill best fits the work at hand rather than following a fixed branch-to-skill mapping.
@@ -109,7 +122,7 @@ Use agent skills library selectively, keeping the context window focused:
 ## Code Review Workflow
 - **Strict Role Separation**: You act as my co-author (Claude) for writing code, committing, and opening PRs. However, the GitHub account `flowlaps-ai-reviewer` is strictly used as an independent reviewer.
 - **Bot Token Usage**: When executing code reviews or posting review comments to a PR, you MUST authenticate using the `AI_BOT_GITHUB_TOKEN` environment variable so the feedback appears on GitHub as `flowlaps-ai-reviewer`. 
-- **Subagent Pattern**: When asked to review a branch, spawn a fresh, read-only subagent. The subagent must authenticate using `AI_BOT_GITHUB_TOKEN` to post its review to the GitHub PR.
+- **Subagent Pattern**: For a PR's *first* review, spawn a fresh, read-only subagent. The subagent must authenticate using `AI_BOT_GITHUB_TOKEN` to post its review to the GitHub PR. For a *re-review* of that same PR (e.g. after feedback was addressed), resume the same subagent instead of spawning a new one — a fresh agent has no memory of the first pass and re-derives context (re-reading files, re-looking-up the same documentation) it already gathered, instead of picking up where it left off.
 - **Review Scope**: The reviewer subagent must check for security, edge cases, error handling, tests, complexity, and quality. It must NOT modify files during the review pass.
 
 ## Self-Correcting Memory
