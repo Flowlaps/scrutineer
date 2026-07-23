@@ -31,6 +31,7 @@ function setupRepo(t: import("node:test").TestContext): string {
   writeFileSync(join(dir, "package.json"), '{"name":"example"}\n');
   writeFileSync(join(dir, "next.config.js"), "module.exports = {};\n");
   writeFileSync(join(dir, "migration.sql"), "ALTER TABLE users ADD COLUMN email TEXT;\n");
+  writeFileSync(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
   git(dir, ["add", "."]);
   git(dir, ["commit", "-m", "feature work"]);
 
@@ -45,16 +46,18 @@ test("getChangedFiles returns the changed .ts/.tsx files vs the target ref", (t)
     "migration.sql",
     "next.config.js",
     "package.json",
+    "pnpm-lock.yaml",
     "widget.tsx",
   ]);
 });
 
-test("getChangedFiles also keeps dynamic-skill trigger filenames (package.json, next.config.*, *.sql) that aren't .ts/.tsx, but still drops unrelated non-.ts files", (t) => {
+test("getChangedFiles also keeps dynamic-skill trigger filenames (package.json, next.config.*, lockfiles, *.sql) that aren't .ts/.tsx, but still drops unrelated non-.ts files", (t) => {
   const dir = setupRepo(t);
   const files = getChangedFiles("main", dir);
   assert.ok(files.includes("package.json"));
   assert.ok(files.includes("next.config.js"));
   assert.ok(files.includes("migration.sql"));
+  assert.ok(files.includes("pnpm-lock.yaml"));
   assert.ok(!files.includes("notes.md"));
   assert.ok(!files.includes("script.js"));
 });

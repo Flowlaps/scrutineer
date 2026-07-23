@@ -37,6 +37,15 @@ test("detects config files by package.json and next.config.ts/js/mjs", () => {
   }
 });
 
+test("detects lockfiles (pnpm-lock.yaml, package-lock.json, yarn.lock) as config", () => {
+  for (const file of ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"]) {
+    const result = buildDynamicSkillInstructions([file]);
+    assert.deepEqual(result.triggeredCategories, ["config"], `expected "${file}" to trigger config`);
+    assert.equal(result.codeReviewerAdditions, "");
+    assert.match(result.securityAuditorAdditions, /Dependency & Environment Auditor/);
+  }
+});
+
 test("combines instructions across categories when a batch touches multiple file types", () => {
   const result = buildDynamicSkillInstructions(["src/app/page.tsx", "src/app/api/route.ts", "package.json"]);
 

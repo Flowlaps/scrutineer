@@ -75,7 +75,7 @@ program
   .option("--repo <owner/repo>", "GitHub repo slug for --pr (defaults to the origin remote)")
   .option(
     "--diff <target>",
-    "review every changed .ts/.tsx file (plus package.json, next.config.*, and *.sql files) against this git ref (e.g. origin/main) as a single batch, instead of one file",
+    "review every changed .ts/.tsx file (plus package.json, next.config.*, lockfiles, and *.sql files) against this git ref (e.g. origin/main) as a single batch, instead of one file",
   )
   .addHelpText(
     "after",
