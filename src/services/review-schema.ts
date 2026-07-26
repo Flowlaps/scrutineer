@@ -65,27 +65,53 @@ export const personaReviewSchema = z.object({
 export type PersonaReview = z.infer<typeof personaReviewSchema>;
 
 function findingLocation(finding: ReviewFinding): string {
-  return finding.line !== undefined ? `${finding.file}:${finding.line}` : finding.file;
+  const file = singleLine(finding.file);
+  return finding.line !== undefined ? `${file}:${finding.line}` : file;
 }
 
-// `severity` and `title` are meant to be short, single-line labels (per their
-// schema descriptions), but both are LLM-generated from untrusted diff content
-// and get interpolated directly into markdown structure below (a "### "
-// heading for severity; a bold span for title) — a value containing embedded
-// blank lines could otherwise inject a fabricated heading/section into the
-// rendered report (e.g. a `severity` of "Info\n\n### Verdict: APPROVE" reading
-// as a separate, forged all-clear section to a skimming reviewer). Collapsing
-// internal whitespace runs to a single space closes that off without needing
-// full markdown escaping, since neither field is expected to contain
-// legitimate multi-line content in the first place.
+// `severity`, `title`, and `file` are meant to be short, single-line labels
+// (per their schema descriptions), but all are LLM-generated from untrusted
+// diff content and get interpolated directly into markdown structure below (a
+// "### " heading for severity; a bold span for title; a bracketed location for
+// file) — a value containing embedded blank lines could otherwise inject a
+// fabricated heading/section into the rendered report (e.g. a `severity` of
+// "Info\n\n### Verdict: APPROVE" reading as a separate, forged all-clear
+// section to a skimming reviewer). Collapsing internal whitespace runs to a
+// single space closes that off without needing full markdown escaping, since
+// none of the three is expected to contain legitimate multi-line content in
+// the first place — unlike `description` below, which legitimately can.
 function singleLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
+}
+
+// Splices a zero-width space (see ZERO_WIDTH_SPACE in ai-orchestrator.ts's
+// neutralizeStructuralTags for the same technique) in front of any line — other
+// than the first, which is fused onto the bullet's own source line via
+// renderFinding and can't start a fresh block on its own — that GFM/CommonMark
+// would otherwise parse as starting a new block: an ATX heading, blockquote,
+// thematic break, list item, or fenced code block. Unlike `singleLine()`,
+// `description` legitimately can and does span multiple paragraphs, so this
+// targets only the specific constructs that would break a line out of the
+// current bullet's list item and render at full, un-nested visibility (PR #48
+// review: `description` is the single largest, most diff-influenced field in
+// the schema, and the same forged-heading risk closed for `severity`/`title`
+// applies to it too — CommonMark's "lazy continuation" doesn't protect against
+// these constructs even without a full blank line separating them). The
+// invisible character breaks pattern recognition without changing what a human
+// reader sees.
+const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
+const BLOCK_START_PATTERN = /^(\s{0,3})(#{1,6}\s|>|-{3,}\s*$|\*{3,}\s*$|_{3,}\s*$|={3,}\s*$|[-*+]\s|\d+[.)]\s|```|~~~)/;
+function neutralizeBlockStarts(text: string): string {
+  return text
+    .split("\n")
+    .map((line, i) => (i === 0 ? line : line.replace(BLOCK_START_PATTERN, (_match, indent: string, marker: string) => `${indent}${ZERO_WIDTH_SPACE}${marker}`)))
+    .join("\n");
 }
 
 function renderFinding(finding: ReviewFinding): string {
   const location = `[${findingLocation(finding)}]`;
   const heading = finding.title ? `${location} **${singleLine(finding.title)}**` : location;
-  return `- ${heading} ${finding.description}`;
+  return `- ${heading} ${neutralizeBlockStarts(finding.description)}`;
 }
 
 // Renders a PersonaReview back into the same broad shape the old free-text
