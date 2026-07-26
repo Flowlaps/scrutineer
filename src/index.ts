@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import "dotenv/config";
+import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { Command, Option } from "commander";
 import * as clack from "@clack/prompts";
 import { parseFile, summaryToMarkdown } from "./services/ast-parser.js";
@@ -21,12 +23,23 @@ import {
   MAX_TOTAL_FILES,
 } from "./services/review-chunker.js";
 
+// Read directly from package.json rather than hardcoding, so --version can't
+// silently drift out of sync with the published package the way a literal
+// string here already had (stuck at "0.1.0" since the initial scaffold,
+// through every release up to 0.6.1). Resolved relative to this file's own
+// location rather than process.cwd() so it finds the right package.json
+// whether run via tsx against src/, the built dist/index.js, or an installed
+// global — src/index.ts and dist/index.js both sit exactly one directory
+// below the package root in every one of those cases.
+const packageJsonPath = fileURLToPath(new URL("../package.json", import.meta.url));
+const { version: packageVersion } = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as { version: string };
+
 const program = new Command();
 
 program
   .name("scrutineer")
   .description("Multi-agent PR review orchestrator CLI")
-  .version("0.1.0");
+  .version(packageVersion);
 
 program
   .command("parse")
