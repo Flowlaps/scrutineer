@@ -68,6 +68,10 @@ let maxObservedPersonaConcurrency = 0;
 let notFoundError: Partial<Record<Kind, boolean>> = {};
 // Simulates an arbitrary non-2xx APICallError (e.g. the "Bad Request" from GH #22).
 let badRequestError: Partial<Record<Kind, { responseBody?: string }>> = {};
+// Lets a test control a persona's exact returned text, instead of the default
+// "${kind}-output" placeholder — needed to exercise how runChunkedReviewPipeline's
+// aggregate() handles model output containing HTML-structural text (PR #43 review).
+let customOutputText: Partial<Record<Kind, string>> = {};
 
 function resetState(): void {
   calls = [];
@@ -77,6 +81,7 @@ function resetState(): void {
   notFoundError = {};
   badRequestError = {};
   lengthTruncated = {};
+  customOutputText = {};
   activePersonaCalls = 0;
   maxObservedPersonaConcurrency = 0;
 }
@@ -163,7 +168,7 @@ mock.module("ai", {
         if (lengthTruncated[kind]) {
           return { text: lengthTruncated[kind]!.text, usage: FIXED_USAGE, finishReason: "length" };
         }
-        return { text: `${kind}-output`, usage: FIXED_USAGE, finishReason: "stop" };
+        return { text: customOutputText[kind] ?? `${kind}-output`, usage: FIXED_USAGE, finishReason: "stop" };
       } finally {
         if (tracksConcurrency) {
           activePersonaCalls--;
@@ -569,6 +574,17 @@ test("appends output-efficiency instructions to both review personas, but not to
   assert.doesNotMatch(byKind["test-generator"]!.systemText, /Output Efficiency/);
 });
 
+test("appends report-proportionality instructions to both review personas, but not to test-generation", async () => {
+  resetState();
+
+  await runReviewPipeline(baseInput);
+
+  const byKind = Object.fromEntries(calls.map((c) => [c.kind, c]));
+  assert.match(byKind["code-reviewer"]!.systemText, /Report Proportionality/);
+  assert.match(byKind["security-auditor"]!.systemText, /Report Proportionality/);
+  assert.doesNotMatch(byKind["test-generator"]!.systemText, /Report Proportionality/);
+});
+
 test("resolveMaxOutputTokens: base case, linear scaling, zero/negative-safe input, and the ceiling clamp", () => {
   // Hardcoded literals rather than deriving "expected" from the function under
   // test itself, so a regression in the constants (BASE_OUTPUT_TOKENS,
@@ -648,18 +664,59 @@ const chunkedBaseInput = {
   ],
 };
 
-test("aggregates each chunk's codeReview/securityAudit under its own numbered heading, in order", async () => {
+test("aggregates each chunk's codeReview/securityAudit under its own collapsed <details> disclosure, in order", async () => {
   resetState();
 
   const result = await runChunkedReviewPipeline(chunkedBaseInput);
 
-  const chunk1Heading = "### Chunk 1/2 (1 file(s): a.ts)";
-  const chunk2Heading = "### Chunk 2/2 (1 file(s): b.ts)";
+  const chunk1Summary = "<summary>Chunk 1/2 (1 file(s): a.ts)</summary>";
+  const chunk2Summary = "<summary>Chunk 2/2 (1 file(s): b.ts)</summary>";
   for (const text of [result.codeReview, result.securityAudit]) {
-    assert.ok(text.includes(chunk1Heading), `expected "${chunk1Heading}" in: ${text}`);
-    assert.ok(text.includes(chunk2Heading), `expected "${chunk2Heading}" in: ${text}`);
-    assert.ok(text.indexOf(chunk1Heading) < text.indexOf(chunk2Heading), "chunk 1 should appear before chunk 2");
+    assert.ok(text.includes(chunk1Summary), `expected "${chunk1Summary}" in: ${text}`);
+    assert.ok(text.includes(chunk2Summary), `expected "${chunk2Summary}" in: ${text}`);
+    assert.ok(text.indexOf(chunk1Summary) < text.indexOf(chunk2Summary), "chunk 1 should appear before chunk 2");
+    assert.ok((text.match(/<details>/g) ?? []).length === 2, "expected one <details> block per chunk");
   }
+});
+
+test("HTML-escapes a chunk's changed file names in the <summary> line, so an untrusted filename can't break out of it (PR #43 review)", async () => {
+  resetState();
+
+  const result = await runChunkedReviewPipeline({
+    ...chunkedBaseInput,
+    chunks: [
+      {
+        label: "Chunk 1/1",
+        changedFiles: ["x</summary><h1>evil.ts"],
+        astContext: "ctx",
+        diff: "diff",
+      },
+    ],
+  });
+
+  for (const text of [result.codeReview, result.securityAudit]) {
+    assert.doesNotMatch(text, /<h1>evil\.ts/, `expected the injected <h1> to be escaped, not raw HTML, in: ${text}`);
+    assert.match(text, /x&lt;\/summary&gt;&lt;h1&gt;evil\.ts/);
+    // Exactly one real <summary>...</summary> pair should survive — the
+    // injected one must read as escaped text, not a second real tag.
+    assert.equal((text.match(/<summary>/g) ?? []).length, 1);
+  }
+});
+
+test("neutralizes a literal '</details>' inside a persona's own findings text, so it can't prematurely close our wrapper (PR #43 review)", async () => {
+  resetState();
+  customOutputText["code-reviewer"] = "Finding: this file's own </details> tag usage is worth reviewing.";
+
+  const result = await runChunkedReviewPipeline(chunkedBaseInput);
+
+  // Exactly one literal "</details>" per chunk should remain — our own
+  // wrapper's closing tag. The one embedded in the persona's text must have
+  // been neutralized (no longer an exact "</details>" substring), even
+  // though it still reads as "</details>" to a human once the invisible
+  // character is stripped back out.
+  const literalCloses = result.codeReview.match(/<\/details>/g) ?? [];
+  assert.equal(literalCloses.length, chunkedBaseInput.chunks.length, `expected only our own wrapper closes in: ${result.codeReview}`);
+  assert.match(result.codeReview, /this file's own <.?\/details> tag usage/);
 });
 
 test("calls sandbox-test generation exactly once against the whole unchunked batch, regardless of chunk count", async () => {

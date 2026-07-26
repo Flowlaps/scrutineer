@@ -46,6 +46,28 @@ test("reports PASS and omits Errors section when the sandbox succeeds", () => {
   assert.match(markdown, /\*\*Result:\*\* PASS/);
   assert.match(markdown, /\*\*Logs:\*\*\n\n- PASS/);
   assert.doesNotMatch(markdown, /\*\*Errors:\*\*/);
+  // A passing sandbox run collapses its detail by default — only a failure
+  // needs the disclosure open without an extra click.
+  assert.match(markdown, /<details>\n<summary>Generated test & output<\/summary>/);
+});
+
+test("omits both Logs and Errors sections when the sandbox produces neither, leaving just the fenced code inside <details>", () => {
+  const markdown = buildReportMarkdown({
+    filePath: "f.ts",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    result: fakeResult({
+      sandboxTest: {
+        code: 'console.log("PASS");',
+        result: { ok: true, logs: [], errors: [] },
+      },
+    }),
+  });
+
+  assert.match(markdown, /\*\*Result:\*\* PASS/);
+  assert.doesNotMatch(markdown, /\*\*Logs:\*\*/);
+  assert.doesNotMatch(markdown, /\*\*Errors:\*\*/);
+  assert.match(markdown, /```js\nconsole\.log\("PASS"\);\n```\n\n<\/details>/);
 });
 
 test("reports FAILED and includes an Errors section when the sandbox fails", () => {
@@ -64,6 +86,9 @@ test("reports FAILED and includes an Errors section when the sandbox fails", () 
   assert.match(markdown, /\*\*Result:\*\* FAILED/);
   assert.match(markdown, /\*\*Errors:\*\*\n\n- boom/);
   assert.doesNotMatch(markdown, /\*\*Logs:\*\*/);
+  // A failing sandbox run is exactly the case a reader needs without an extra
+  // click, so the disclosure stays open by default.
+  assert.match(markdown, /<details open>\n<summary>Generated test & output<\/summary>/);
 });
 
 test("codeFence picks a longer fence when the code contains backticks", () => {
