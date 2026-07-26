@@ -71,7 +71,13 @@ Your response has a bounded token budget. To make the most of it:
 - Lead with the most significant findings; note minor or low-severity items in one line each, not a full explanation.
 - Keep suggested-fix code snippets to the minimal changed lines needed to show the delta — not a full reimplementation of the surrounding function.
 - State each finding once. Do not restate the same root cause under multiple headings or severities.
-- If you're running low on budget, finish the current finding cleanly and stop — do not leave a bullet or code block truncated mid-line.`;
+- If you're running low on budget, finish the current finding cleanly and stop — do not leave a bullet or code block truncated mid-line.
+
+## Report Proportionality
+A human reviewer skims a diff and only writes down what's actually there — do the same, so the report reads like one of theirs instead of a fixed template stamped onto every diff regardless of size:
+- If a severity tier or section (Critical Issues, Important Issues, a Findings entry, etc.) has nothing to report, omit that heading and its placeholder text entirely — do not write "None." or "No issues found." under it.
+- Skip generic best-practice reminders that would apply to any diff of this shape (e.g. "keep dependencies updated," boilerplate supply-chain caveats) unless it names something specific and actionable about this diff. A trivial change (e.g. a version bump) earns a short report, not a full template padded out with filler.
+- Keep required structural elements (the Verdict line, the one-line "What's Done Well" note, Summary counts) since those stay genuinely useful even at zero — but do not expand them into more than their template shows.`;
 
 // Bounds every model call on its own, so a broken provider (bad key, unreachable
 // host, model not found) fails in bounded time instead of hanging indefinitely —
@@ -756,14 +762,21 @@ export async function runChunkedReviewPipeline(
 
   const sandboxTest = await sandboxScheduler.ensureStarted(() => onProgress?.({ stage: "sandbox-test" }));
 
+  // Each chunk's full section is collapsed behind a <details> disclosure rather
+  // than sitting in the comment as a flat "### Chunk N/M" heading — a chunked
+  // batch previously repeated the entire per-chunk template back-to-back into
+  // one long, hard-to-skim comment (issue #42). Collapsing lets the comment
+  // open short, with per-chunk detail only expanding on demand; a blank line
+  // after <summary> and before </details> is required for GitHub to render the
+  // markdown inside the block instead of treating it as raw text.
   function aggregate(sectionOf: (result: ChunkReviewPair) => string): string {
     return chunkResults
       .map((result, i) => {
         const chunk = input.chunks[i] as ReviewChunk;
-        const heading = `### Chunk ${i + 1}/${input.chunks.length} (${chunk.changedFiles.length} file(s): ${chunk.changedFiles.join(", ")})`;
-        return `${heading}\n\n${sectionOf(result)}`;
+        const summary = `Chunk ${i + 1}/${input.chunks.length} (${chunk.changedFiles.length} file(s): ${chunk.changedFiles.join(", ")})`;
+        return `<details>\n<summary>${summary}</summary>\n\n${sectionOf(result)}\n\n</details>`;
       })
-      .join("\n\n---\n\n");
+      .join("\n\n");
   }
 
   return {

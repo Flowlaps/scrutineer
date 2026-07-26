@@ -648,17 +648,18 @@ const chunkedBaseInput = {
   ],
 };
 
-test("aggregates each chunk's codeReview/securityAudit under its own numbered heading, in order", async () => {
+test("aggregates each chunk's codeReview/securityAudit under its own collapsed <details> disclosure, in order", async () => {
   resetState();
 
   const result = await runChunkedReviewPipeline(chunkedBaseInput);
 
-  const chunk1Heading = "### Chunk 1/2 (1 file(s): a.ts)";
-  const chunk2Heading = "### Chunk 2/2 (1 file(s): b.ts)";
+  const chunk1Summary = "<summary>Chunk 1/2 (1 file(s): a.ts)</summary>";
+  const chunk2Summary = "<summary>Chunk 2/2 (1 file(s): b.ts)</summary>";
   for (const text of [result.codeReview, result.securityAudit]) {
-    assert.ok(text.includes(chunk1Heading), `expected "${chunk1Heading}" in: ${text}`);
-    assert.ok(text.includes(chunk2Heading), `expected "${chunk2Heading}" in: ${text}`);
-    assert.ok(text.indexOf(chunk1Heading) < text.indexOf(chunk2Heading), "chunk 1 should appear before chunk 2");
+    assert.ok(text.includes(chunk1Summary), `expected "${chunk1Summary}" in: ${text}`);
+    assert.ok(text.includes(chunk2Summary), `expected "${chunk2Summary}" in: ${text}`);
+    assert.ok(text.indexOf(chunk1Summary) < text.indexOf(chunk2Summary), "chunk 1 should appear before chunk 2");
+    assert.ok((text.match(/<details>/g) ?? []).length === 2, "expected one <details> block per chunk");
   }
 });
 

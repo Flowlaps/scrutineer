@@ -46,6 +46,9 @@ test("reports PASS and omits Errors section when the sandbox succeeds", () => {
   assert.match(markdown, /\*\*Result:\*\* PASS/);
   assert.match(markdown, /\*\*Logs:\*\*\n\n- PASS/);
   assert.doesNotMatch(markdown, /\*\*Errors:\*\*/);
+  // A passing sandbox run collapses its detail by default — only a failure
+  // needs the disclosure open without an extra click.
+  assert.match(markdown, /<details>\n<summary>Generated test & output<\/summary>/);
 });
 
 test("reports FAILED and includes an Errors section when the sandbox fails", () => {
@@ -64,6 +67,9 @@ test("reports FAILED and includes an Errors section when the sandbox fails", () 
   assert.match(markdown, /\*\*Result:\*\* FAILED/);
   assert.match(markdown, /\*\*Errors:\*\*\n\n- boom/);
   assert.doesNotMatch(markdown, /\*\*Logs:\*\*/);
+  // A failing sandbox run is exactly the case a reader needs without an extra
+  // click, so the disclosure stays open by default.
+  assert.match(markdown, /<details open>\n<summary>Generated test & output<\/summary>/);
 });
 
 test("codeFence picks a longer fence when the code contains backticks", () => {

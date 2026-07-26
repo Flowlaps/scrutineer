@@ -46,20 +46,28 @@ export function buildReportMarkdown(input: ReportInput): string {
     "",
     `**Result:** ${sandboxStatus}`,
     "",
-    `${fence}js`,
-    sandboxTest.code,
-    fence,
   ];
 
+  const detail = [`${fence}js`, sandboxTest.code, fence];
+
   if (sandboxTest.result.logs.length > 0) {
-    sections.push("", "**Logs:**", "");
-    sections.push(...sandboxTest.result.logs.map((line) => `- ${line}`));
+    detail.push("", "**Logs:**", "");
+    detail.push(...sandboxTest.result.logs.map((line) => `- ${line}`));
   }
 
   if (sandboxTest.result.errors.length > 0) {
-    sections.push("", "**Errors:**", "");
-    sections.push(...sandboxTest.result.errors.map((line) => `- ${line}`));
+    detail.push("", "**Errors:**", "");
+    detail.push(...sandboxTest.result.errors.map((line) => `- ${line}`));
   }
+
+  // Collapsed behind a <details> disclosure so a trivial diff's report doesn't
+  // dump a full generated test script every time (issue #42) — the PASS/FAILED
+  // line above already tells a skimming reader what they need; the code and
+  // logs are there on demand. Left open by default on a failure, since that's
+  // exactly the case where a reader needs the detail without an extra click.
+  sections.push(`<details${sandboxTest.result.ok ? "" : " open"}>`, "<summary>Generated test & output</summary>", "");
+  sections.push(...detail);
+  sections.push("", "</details>");
 
   return sections.join("\n");
 }
