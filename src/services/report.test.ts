@@ -51,6 +51,25 @@ test("reports PASS and omits Errors section when the sandbox succeeds", () => {
   assert.match(markdown, /<details>\n<summary>Generated test & output<\/summary>/);
 });
 
+test("omits both Logs and Errors sections when the sandbox produces neither, leaving just the fenced code inside <details>", () => {
+  const markdown = buildReportMarkdown({
+    filePath: "f.ts",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    result: fakeResult({
+      sandboxTest: {
+        code: 'console.log("PASS");',
+        result: { ok: true, logs: [], errors: [] },
+      },
+    }),
+  });
+
+  assert.match(markdown, /\*\*Result:\*\* PASS/);
+  assert.doesNotMatch(markdown, /\*\*Logs:\*\*/);
+  assert.doesNotMatch(markdown, /\*\*Errors:\*\*/);
+  assert.match(markdown, /```js\nconsole\.log\("PASS"\);\n```\n\n<\/details>/);
+});
+
 test("reports FAILED and includes an Errors section when the sandbox fails", () => {
   const markdown = buildReportMarkdown({
     filePath: "f.ts",

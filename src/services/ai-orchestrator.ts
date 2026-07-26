@@ -619,6 +619,43 @@ async function withAbortOnFailure<T>(controller: AbortController, run: () => Pro
   }
 }
 
+// Escapes text destined for a raw HTML context (the <summary> line built in
+// aggregate() below) where the markdown renderer does NOT run its own
+// escaping — unlike a chunk's markdown body, that line is emitted verbatim as
+// raw HTML. `chunk.changedFiles` ultimately comes from `git diff --name-only`
+// (see git-diff.ts), which — like every other file-derived value in this
+// module — is untrusted external input: a filename can legally contain `<`,
+// `>`, or `&` on Linux/macOS, and an unescaped one (e.g.
+// `x</summary><h1>evil.ts`) would break the <summary> tag boundary and inject
+// literal HTML (GitHub's sanitizer still strips <script>, so this is a
+// rendering-corruption/spoofing risk, not code execution — see PR #43 review).
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Splices a zero-width space (built via String.fromCharCode rather than a
+// pasted literal, which would be invisible and unreviewable sitting directly
+// in source) right after "<" in any <details>/<summary> open or close tag
+// found in `text`, so a browser can no longer recognize it as a real HTML
+// tag — invisible to a reader, since the character has no width. Applied only
+// to the four exact structural tag names aggregate() itself introduces,
+// deliberately NOT a blanket escapeHtml() of the whole chunk body: that body
+// is markdown (a persona's findings), which can legitimately contain the
+// model's own fenced or inline code with literal `<`/`>` (e.g.
+// `Array<string>`, `x < 5`) — GFM's renderer already HTML-escapes that code
+// content on its own when it renders the fence/span, so pre-escaping it here
+// too would double-escape and show a literal "&lt;" instead of "<". The
+// narrower risk this guards against instead: a persona's prose (not fenced)
+// quoting a literal "</details>" — plausible if a finding happens to discuss
+// this very file's own <details>/<summary> usage — which would otherwise
+// close our wrapper early and leak everything after it out of the collapsed
+// block (see PR #43 review).
+const STRUCTURAL_TAG_PATTERN = /<(\/?)(details|summary)\b/gi;
+const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
+function neutralizeStructuralTags(text: string): string {
+  return text.replace(STRUCTURAL_TAG_PATTERN, `<${ZERO_WIDTH_SPACE}$1$2`);
+}
+
 // The chunked counterpart to runReviewPipeline, for --diff batches too large
 // for a single call's output-token ceiling to comfortably cover (issue #35,
 // the acknowledged follow-up to #33/#34's per-call scaling). Deliberately kept
@@ -773,8 +810,11 @@ export async function runChunkedReviewPipeline(
     return chunkResults
       .map((result, i) => {
         const chunk = input.chunks[i] as ReviewChunk;
-        const summary = `Chunk ${i + 1}/${input.chunks.length} (${chunk.changedFiles.length} file(s): ${chunk.changedFiles.join(", ")})`;
-        return `<details>\n<summary>${summary}</summary>\n\n${sectionOf(result)}\n\n</details>`;
+        const summary = escapeHtml(
+          `Chunk ${i + 1}/${input.chunks.length} (${chunk.changedFiles.length} file(s): ${chunk.changedFiles.join(", ")})`,
+        );
+        const body = neutralizeStructuralTags(sectionOf(result));
+        return `<details>\n<summary>${summary}</summary>\n\n${body}\n\n</details>`;
       })
       .join("\n\n");
   }
