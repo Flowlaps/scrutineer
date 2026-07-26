@@ -5,8 +5,14 @@ import type { ReviewResult } from "./ai-orchestrator.js";
 
 function fakeResult(overrides: Partial<ReviewResult> = {}): ReviewResult {
   return {
-    codeReview: "## Review Summary\n\nLooks fine.",
-    securityAudit: "## Security Audit Report\n\nNo findings.",
+    codeReview: {
+      markdown: "## Review Summary\n\nLooks fine.",
+      review: { summary: "Looks fine.", findings: [], positiveObservations: [], additionalNotes: [] },
+    },
+    securityAudit: {
+      markdown: "## Security Audit Report\n\nNo findings.",
+      review: { summary: "No findings.", findings: [], positiveObservations: [], additionalNotes: [] },
+    },
     sandboxTest: {
       code: 'console.log("PASS");',
       result: { ok: true, logs: ["PASS"], errors: [] },

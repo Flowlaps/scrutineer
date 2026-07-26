@@ -1,5 +1,7 @@
 import {
   APICallError,
+  NoObjectGeneratedError,
+  generateObject,
   generateText,
   type FinishReason,
   type Instructions,
@@ -9,11 +11,12 @@ import {
   type SystemModelMessage,
   type TextPart,
 } from "ai";
-import { loadPersonaPrompt, type PersonaPrompt } from "./prompt-loader.js";
+import { loadPersonaPrompt, type PersonaId, type PersonaPrompt } from "./prompt-loader.js";
 import { getModelId, type ProviderId } from "../utils/model-factory.js";
 import { runInSandbox, type SandboxResult } from "./sandbox.js";
 import { buildDynamicSkillInstructions } from "./skill-router.js";
 import { MAX_FILES_PER_CHUNK } from "./review-chunker.js";
+import { personaReviewSchema, renderPersonaReviewMarkdown, type PersonaReview } from "./review-schema.js";
 
 // Bounds how much file content and model output a single review can consume, so a
 // huge or generated input file can't blow up token cost or hang on context limits.
@@ -31,23 +34,36 @@ export const MAX_SECTION_CHARS = 40_000;
 // finishReason case in warnIfOutputTruncated below), so scaling it up front costs
 // nothing when a review doesn't need the extra room — it only matters for the
 // batches that actually do.
-const BASE_OUTPUT_TOKENS = 4096;
+//
+// Doubled from the pre-structured-output value of 4096 (issue #46's migration of
+// the two review personas from generateText to generateObject): a live run
+// against a single ~140-line file measured the security-auditor call alone at
+// ~4950 output tokens for a genuine, non-pathological review — already over the
+// old single-file budget on its own. Structured/tool-call output carries real
+// overhead over free-text markdown (schema field names repeated per finding,
+// JSON punctuation/escaping) that the old budget never had to account for; without
+// this increase, every review silently fell back to the truncated-response
+// placeholder (see the NoObjectGeneratedError handling in runPersona) instead of
+// real findings. 8192 left that same live single-file run with ~40% headroom to
+// spare.
+const BASE_OUTPUT_TOKENS = 8192;
 // A hard ceiling regardless of batch size, so a pathological --diff (hundreds of
 // files) can't drive a single call's cost/latency arbitrarily high. A batch big
 // enough to still hit this still gets the visible truncation notice below rather
 // than failing silently; chunking a huge batch into multiple smaller review calls
 // would remove the ceiling entirely but is a larger architecture change tracked
-// separately (see issue #35), not folded into this scaling fix.
-const OUTPUT_TOKENS_CEILING = 16_384;
+// separately (see issue #35), not folded into this scaling fix. Doubled in step
+// with BASE_OUTPUT_TOKENS above, keeping the same base:ceiling ratio rather than
+// letting large batches lose the proportional headroom small ones just gained.
+const OUTPUT_TOKENS_CEILING = 32_768;
 // Derived, not hardcoded: chunking (review-chunker.ts) means MAX_FILES_PER_CHUNK
 // is the largest file count a single code-review/security-audit call will ever
 // actually see in practice, so the per-file increment is sized to land the
-// ceiling right at that point. A flat 256/file increment (issue #39) meant a
-// full 10-file chunk only reached 6400/16384 tokens (~39% of the ceiling the
-// system already treats as an acceptable cost/latency tradeoff) and got cut off
-// mid-response on ordinary, non-pathological PRs. Deriving from the same
-// constants keeps this in sync automatically if either one changes, rather than
-// silently drifting back out of proportion the way the flat constant did.
+// ceiling right at that point (issue #39). Deriving from BASE_OUTPUT_TOKENS and
+// OUTPUT_TOKENS_CEILING keeps this in sync automatically if either one changes
+// (as they did for issue #46's structured-output token budget increase), rather
+// than silently drifting back out of proportion the way an earlier flat
+// per-file constant did.
 const PER_ADDITIONAL_FILE_OUTPUT_TOKENS = Math.ceil(
   (OUTPUT_TOKENS_CEILING - BASE_OUTPUT_TOKENS) / (MAX_FILES_PER_CHUNK - 1),
 );
@@ -78,6 +94,37 @@ A human reviewer skims a diff and only writes down what's actually there — do 
 - If a severity tier or section (Critical Issues, Important Issues, a Findings entry, etc.) has nothing to report, omit that heading and its placeholder text entirely — do not write "None." or "No issues found." under it.
 - Skip generic best-practice reminders that would apply to any diff of this shape (e.g. "keep dependencies updated," boilerplate supply-chain caveats) unless it names something specific and actionable about this diff. A trivial change (e.g. a version bump) earns a short report, not a full template padded out with filler.
 - Keep required structural elements (the Verdict line, the one-line "What's Done Well" note, Summary counts) since those stay genuinely useful even at zero — but do not expand them into more than their template shows.`;
+
+// Bridges each persona's own hash-pinned "Output Format"/"Review Output Template"
+// section (prompt-loader.ts) — which instructs the model to hand back a specific
+// markdown document — to the structured schema runPersona() now requests instead
+// (see review-schema.ts, and issue #46's "structured output" direction). Riding
+// alongside the persona prompt as its own additional instruction, the same way
+// OUTPUT_EFFICIENCY_INSTRUCTIONS and dynamic-skill additions do, rather than
+// editing the pinned template itself. Without this mapping the model has two
+// conflicting instructions (its own prompt's markdown template vs. the schema's
+// field names) and nothing telling it how one maps to the other.
+const CODE_REVIEWER_SCHEMA_BRIDGE = `## Structured Output Mapping
+Populate the requested schema instead of writing out the "Review Output Template" markdown above. Map this persona's own sections to schema fields:
+- Verdict -> \`verdict\` ("APPROVE" or "REQUEST CHANGES")
+- Overview -> \`summary\`
+- Critical Issues / Important Issues / Suggestions entries -> one \`findings\` entry each, with \`severity\` set to "Critical", "Important", or "Suggestion" respectively
+- What's Done Well -> \`positiveObservations\`
+- Verification Story -> \`additionalNotes\`
+Do not restate finding content in \`summary\` — keep it to the overview only.`;
+
+const SECURITY_AUDITOR_SCHEMA_BRIDGE = `## Structured Output Mapping
+Populate the requested schema instead of writing out the "Output Format" markdown above. Map this persona's own sections to schema fields:
+- Each Findings entry -> one \`findings\` entry, with \`title\` set to the finding title, \`severity\` set to its tier (Critical/High/Medium/Low/Info), and Description/Impact/Proof of concept/Recommendation combined into \`description\`
+- Positive Observations -> \`positiveObservations\`
+- The general Recommendations section -> \`additionalNotes\`
+- \`summary\` should be short overview prose, not the Critical/High/Medium/Low/Info counts — a reader can derive those directly from \`findings\`
+Leave \`verdict\` unset — this persona's template has none.`;
+
+const SCHEMA_BRIDGE_BY_PERSONA: Record<PersonaId, string> = {
+  "code-reviewer": CODE_REVIEWER_SCHEMA_BRIDGE,
+  "security-auditor": SECURITY_AUDITOR_SCHEMA_BRIDGE,
+};
 
 // Bounds every model call on its own, so a broken provider (bad key, unreachable
 // host, model not found) fails in bounded time instead of hanging indefinitely —
@@ -123,9 +170,20 @@ export interface SandboxTestOutcome {
   result: SandboxResult;
 }
 
+// `markdown` keeps the aggregated-report delivery path (report.ts, the chunked
+// pipeline's <details> aggregation below) unchanged — a persona's rendered
+// output looks the same to a reader as it did when runPersona returned raw
+// generateText() prose. `review` is the new addition: the structured
+// file/line/severity data a future PR (issue #46) needs to anchor GitHub
+// inline review comments, without having to regex-parse it back out of markdown.
+export interface PersonaReviewOutcome {
+  markdown: string;
+  review: PersonaReview;
+}
+
 export interface ReviewResult {
-  codeReview: string;
-  securityAudit: string;
+  codeReview: PersonaReviewOutcome;
+  securityAudit: PersonaReviewOutcome;
   sandboxTest: SandboxTestOutcome;
 }
 
@@ -303,18 +361,31 @@ function warnIfOutputTruncated(stage: ReviewStage, finishReason: FinishReason, m
   }
 }
 
-// Only meaningful for the two review personas, whose output is markdown text
-// that ends up directly in the posted report — generateSandboxTest's output is
-// executable JS, where appending prose would just corrupt the script, so it
-// relies on warnIfOutputTruncated()'s console.error alone.
-function appendTruncationNotice(text: string, finishReason: FinishReason): string {
+// Mirrors the equivalent generateText truncation handling (issue #33) for the
+// structured-output path: a successfully-parsed object that still reports
+// finishReason "length" (the model happened to finish its JSON right as the
+// budget ran out) gets the same visible footer, appended to `summary` since
+// there's no single "the whole response" string to append to anymore.
+function withTruncationNotice(review: PersonaReview, finishReason: FinishReason): PersonaReview {
   if (finishReason !== "length") {
-    return text;
+    return review;
   }
-  return text.trim().length > 0
-    ? `${text}\n\n_Note: this response was cut off after reaching the model's output token limit and may be incomplete._`
-    : "_Review truncated: the model's response exceeded the output token budget before completing._";
+  const notice = "_Note: this response was cut off after reaching the model's output token limit and may be incomplete._";
+  return { ...review, summary: review.summary.trim().length > 0 ? `${review.summary}\n\n${notice}` : notice };
 }
+
+// generateObject's own truncation failure mode (issue #33's structured-output
+// counterpart): a response cut off mid-JSON almost always fails schema
+// validation outright, surfacing as NoObjectGeneratedError rather than
+// generateText's graceful "whatever text made it out so far". Caught here
+// rather than inspecting a successful result's finishReason after the fact —
+// unlike generateText, there is no successful result to inspect.
+const TRUNCATED_FALLBACK: PersonaReview = {
+  summary: "_Review truncated: the model's response exceeded the output token budget before completing._",
+  findings: [],
+  positiveObservations: [],
+  additionalNotes: [],
+};
 
 async function runPersona(
   model: LanguageModel,
@@ -325,48 +396,77 @@ async function runPersona(
   userMessage: ModelMessage,
   abortSignal: AbortSignal,
   maxOutputTokens: number,
-): Promise<string> {
+): Promise<PersonaReviewOutcome> {
   const cacheControl = cacheControlProviderOptions(provider);
   // The persona prompt is its own cache breakpoint, kept separate from the
   // dynamic skill additions (see skill-router.ts) — those vary per diff, so
   // folding them into the same string would tie the persona's cache hit rate
   // to reviews repeatedly touching the same file-type categories, instead of
   // any two reviews using the same persona regardless of what changed. The
-  // efficiency instructions, by contrast, are fixed scrutineer-authored text
-  // identical on every call, so they're folded directly into this same cached
-  // string rather than given their own breakpoint: at ~90 tokens on their own
-  // they'd sit under Anthropic's documented minimum cacheable segment size for
-  // Sonnet/Opus-class models (1024 tokens), leaving it ambiguous whether a
-  // trailing breakpoint that small actually gets cached. Riding along with the
-  // (much larger) persona prompt sidesteps that question entirely.
+  // efficiency instructions and schema-mapping bridge, by contrast, are fixed
+  // scrutineer-authored text identical on every call for a given persona, so
+  // they're folded directly into this same cached string rather than given
+  // their own breakpoint: at well under Anthropic's documented minimum
+  // cacheable segment size for Sonnet/Opus-class models (1024 tokens) on their
+  // own, it's ambiguous whether a trailing breakpoint that small actually gets
+  // cached. Riding along with the (much larger) persona prompt sidesteps that
+  // question entirely.
+  const basePromptText = `${persona.systemPrompt}\n\n${OUTPUT_EFFICIENCY_INSTRUCTIONS}\n\n${SCHEMA_BRIDGE_BY_PERSONA[persona.id]}`;
   const basePart: SystemModelMessage = cacheControl
-    ? {
-        role: "system",
-        content: `${persona.systemPrompt}\n\n${OUTPUT_EFFICIENCY_INSTRUCTIONS}`,
-        providerOptions: cacheControl,
-      }
-    : { role: "system", content: `${persona.systemPrompt}\n\n${OUTPUT_EFFICIENCY_INSTRUCTIONS}` };
+    ? { role: "system", content: basePromptText, providerOptions: cacheControl }
+    : { role: "system", content: basePromptText };
   const system: Instructions = additionalInstructions
     ? [basePart, { role: "system", content: additionalInstructions }]
     : basePart;
-  let text: string;
+
+  // generateObject's options type omits `timeout` (unlike generateText's, which
+  // accepts it via RequestOptions) — see REQUEST_TIMEOUT_MS's own comment on why
+  // a per-call bound matters independently of the shared AbortController below.
+  // AbortSignal.any replicates the same bound by racing the pipeline's shared
+  // signal against a fresh per-call timer, rather than leaving this call
+  // unbounded.
+  const boundedSignal = AbortSignal.any([abortSignal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
+
+  let object: PersonaReview;
   let usage: LanguageModelUsage;
   let finishReason: FinishReason;
   try {
-    ({ text, usage, finishReason } = await generateText({
+    ({ object, usage, finishReason } = await generateObject({
       model,
+      schema: personaReviewSchema,
+      schemaName: "PersonaReview",
+      schemaDescription: "Structured review findings, replacing this persona's own markdown template.",
       system,
       messages: [userMessage],
       maxOutputTokens,
-      abortSignal,
-      timeout: REQUEST_TIMEOUT_MS,
+      abortSignal: boundedSignal,
     }));
   } catch (error) {
+    if (NoObjectGeneratedError.isInstance(error)) {
+      if (error.finishReason === "length") {
+        // NoObjectGeneratedError still carries usage even though no object came
+        // back — logged the same way a successful call's usage is, so a
+        // truncation this severe (a fully-discarded response, not just a
+        // trimmed one) is just as visible as the token cost that caused it.
+        if (error.usage) {
+          logUsage(stage, error.usage);
+        }
+        console.error(
+          `scrutineer: ${stage} response hit the ${maxOutputTokens}-token output limit before finishing and could not ` +
+            "be parsed as structured output — the output below is a fallback, not the model's actual findings.",
+        );
+        return { markdown: renderPersonaReviewMarkdown(TRUNCATED_FALLBACK), review: TRUNCATED_FALLBACK };
+      }
+      throw new Error(`${stage} did not return a structured response the schema could parse: ${error.message}`, {
+        cause: error,
+      });
+    }
     throw friendlyModelError(error, provider, model);
   }
   logUsage(stage, usage);
   warnIfOutputTruncated(stage, finishReason, maxOutputTokens);
-  return appendTruncationNotice(text, finishReason);
+  const review = withTruncationNotice(object, finishReason);
+  return { markdown: renderPersonaReviewMarkdown(review), review };
 }
 
 function stripCodeFences(text: string): string {
@@ -499,7 +599,7 @@ export async function runReviewPipeline(
       securityAuditor,
       dynamicSkills.securityAuditorAdditions,
       "security-audit",
-      buildUserMessage(cacheableSection, input.provider, codeReview),
+      buildUserMessage(cacheableSection, input.provider, codeReview.markdown),
       controller.signal,
       maxOutputTokens,
     ),
@@ -550,8 +650,8 @@ export interface ChunkedReviewInput {
 // Named to avoid repeating this shape as an inline anonymous type at every
 // call site that produces or consumes one chunk's persona results.
 export interface ChunkReviewPair {
-  codeReview: string;
-  securityAudit: string;
+  codeReview: PersonaReviewOutcome;
+  securityAudit: PersonaReviewOutcome;
 }
 
 export interface ChunkedReviewProgressEvent {
@@ -727,7 +827,7 @@ export async function runChunkedReviewPipeline(
         securityAuditor,
         dynamicSkills.securityAuditorAdditions,
         "security-audit",
-        buildUserMessage(cacheableSection, input.provider, codeReview),
+        buildUserMessage(cacheableSection, input.provider, codeReview.markdown),
         controller.signal,
         maxOutputTokens,
       ),
@@ -806,22 +906,50 @@ export async function runChunkedReviewPipeline(
   // open short, with per-chunk detail only expanding on demand; a blank line
   // after <summary> and before </details> is required for GitHub to render the
   // markdown inside the block instead of treating it as raw text.
-  function aggregate(sectionOf: (result: ChunkReviewPair) => string): string {
+  function aggregateMarkdown(sectionOf: (result: ChunkReviewPair) => PersonaReviewOutcome): string {
     return chunkResults
       .map((result, i) => {
         const chunk = input.chunks[i] as ReviewChunk;
         const summary = escapeHtml(
           `Chunk ${i + 1}/${input.chunks.length} (${chunk.changedFiles.length} file(s): ${chunk.changedFiles.join(", ")})`,
         );
-        const body = neutralizeStructuralTags(sectionOf(result));
+        const body = neutralizeStructuralTags(sectionOf(result).markdown);
         return `<details>\n<summary>${summary}</summary>\n\n${body}\n\n</details>`;
       })
       .join("\n\n");
   }
 
+  // Merges every chunk's structured findings into one array for the batch —
+  // simple concatenation, not deduplication. Cross-chunk near-duplicate
+  // findings (e.g. two chunks both flagging the same cross-cutting concern)
+  // are a known, accepted gap here, same as issue #46's own writeup: chunks
+  // are disjoint file sets, so exact duplication is unlikely, and real dedup
+  // needs the GitHub Reviews API integration this schema change is laying the
+  // groundwork for, not this PR. `verdict` is intentionally left unset — a
+  // chunked batch has no single verdict; each chunk's own (if any) is still
+  // visible inside that chunk's collapsed markdown section above.
+  function mergeChunkedReview(sectionOf: (result: ChunkReviewPair) => PersonaReviewOutcome): PersonaReview {
+    const reviews = chunkResults.map((r) => sectionOf(r).review);
+    return {
+      summary: reviews
+        .map((r) => r.summary.trim())
+        .filter((text) => text.length > 0)
+        .join("\n\n"),
+      findings: reviews.flatMap((r) => r.findings),
+      positiveObservations: reviews.flatMap((r) => r.positiveObservations),
+      additionalNotes: reviews.flatMap((r) => r.additionalNotes),
+    };
+  }
+
   return {
-    codeReview: aggregate((r) => r.codeReview),
-    securityAudit: aggregate((r) => r.securityAudit),
+    codeReview: {
+      markdown: aggregateMarkdown((r) => r.codeReview),
+      review: mergeChunkedReview((r) => r.codeReview),
+    },
+    securityAudit: {
+      markdown: aggregateMarkdown((r) => r.securityAudit),
+      review: mergeChunkedReview((r) => r.securityAudit),
+    },
     sandboxTest,
   };
 }
