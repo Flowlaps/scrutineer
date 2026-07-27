@@ -20,33 +20,15 @@ export function codeFence(code: string): string {
   return "`".repeat(Math.max(3, longestRun + 1));
 }
 
-export function buildReportMarkdown(input: ReportInput): string {
-  const { filePath, provider, model, result, generatedAt = new Date() } = input;
-  const { codeReview, securityAudit, sandboxTest } = result;
+// Exported so inline-review.ts (issue #46 step 4) can home the Sandbox Test
+// section in a PR review's top-level cover-note body instead of duplicating
+// this rendering — the sandbox result doesn't anchor to any one diff line, so
+// it never becomes a per-line inline comment either way.
+export function buildSandboxSection(sandboxTest: ReviewResult["sandboxTest"]): string[] {
   const sandboxStatus = sandboxTest.result.ok ? "PASS" : "FAILED";
   const fence = codeFence(sandboxTest.code);
 
-  const sections = [
-    "# Scrutineer Review Report",
-    "",
-    `- **File:** \`${filePath}\``,
-    `- **Provider:** ${provider}`,
-    `- **Model:** ${model}`,
-    `- **Generated:** ${generatedAt.toISOString()}`,
-    "",
-    "## Code Review",
-    "",
-    codeReview.markdown,
-    "",
-    "## Security Audit",
-    "",
-    securityAudit.markdown,
-    "",
-    "## Sandbox Test",
-    "",
-    `**Result:** ${sandboxStatus}`,
-    "",
-  ];
+  const sections = ["## Sandbox Test", "", `**Result:** ${sandboxStatus}`, ""];
 
   const detail = [`${fence}js`, sandboxTest.code, fence];
 
@@ -68,6 +50,32 @@ export function buildReportMarkdown(input: ReportInput): string {
   sections.push(`<details${sandboxTest.result.ok ? "" : " open"}>`, "<summary>Generated test & output</summary>", "");
   sections.push(...detail);
   sections.push("", "</details>");
+
+  return sections;
+}
+
+export function buildReportMarkdown(input: ReportInput): string {
+  const { filePath, provider, model, result, generatedAt = new Date() } = input;
+  const { codeReview, securityAudit, sandboxTest } = result;
+
+  const sections = [
+    "# Scrutineer Review Report",
+    "",
+    `- **File:** \`${filePath}\``,
+    `- **Provider:** ${provider}`,
+    `- **Model:** ${model}`,
+    `- **Generated:** ${generatedAt.toISOString()}`,
+    "",
+    "## Code Review",
+    "",
+    codeReview.markdown,
+    "",
+    "## Security Audit",
+    "",
+    securityAudit.markdown,
+    "",
+    ...buildSandboxSection(sandboxTest),
+  ];
 
   return sections.join("\n");
 }
