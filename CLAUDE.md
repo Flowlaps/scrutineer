@@ -142,6 +142,48 @@ Prevent LLM hallucination and context-window bloat by dynamically composing the 
 7. Verify `npm run typecheck`, `npm run build`, and `npm test` pass.
 8. Push the branch and open a PR per the standard workflow.
 
+## Phase 13: Diff-Hunk Line Validation (Issue #46, Step 2)
+
+Issue #46 tracks replacing the aggregated PR comment with native GitHub inline review comments. Step 1 (structured findings) shipped in #48: the code-reviewer/security-auditor personas now return `file`/`line`/`severity`/`description` per finding via `generateObject`, instead of free text (`src/services/review-schema.ts`). Before a finding's `line` can anchor a GitHub Reviews API comment, it has to be validated against the diff's actual hunks — the API rejects a comment anchored to a line outside the diff.
+
+1. Create a new branch for Phase 13.
+2. Parse unified-diff hunk headers (`@@ -a,b +c,d @@`) in `git-diff.ts` (or a new `diff-hunks.ts`) into a per-file set of valid line numbers.
+3. Validate each finding's `line` (from `ReviewResult.codeReview.review`/`securityAudit.review`) against that set. Define an explicit fallback for a finding whose line doesn't validate (e.g. drop to file-level, or exclude from inline eligibility and keep it in the review's top-level body) rather than letting a bad line fail the GitHub API call.
+4. Add tests covering multi-hunk diffs, added vs. context lines, and an out-of-diff line number correctly failing validation.
+5. Verify `npm run typecheck`, `npm run build`, and `npm test` pass.
+6. Push the branch and open a PR per the standard workflow.
+
+## Phase 14: `postPrReview()` Reviews API Client (Issue #46, Step 3)
+
+The Reviews API (`POST /repos/{owner}/{repo}/pulls/{pr}/reviews`) is a different shape than today's single-comment `postPrComment()`: one `body` (overall summary) plus a `comments[]` array of `{ path, line, body }`, with its own submit semantics.
+
+1. Create a new branch for Phase 14.
+2. Add `postPrReview()` to `src/services/github-client.ts`, alongside (not replacing) `postPrComment()`.
+3. Default `event` to `"COMMENT"` — scrutineer is advisory and should not auto-approve or auto-request-changes on a PR.
+4. Mirror `postPrComment()`'s existing test coverage (request shape, response parsing, non-ok error handling) for the new function.
+5. Verify `npm run typecheck`, `npm run build`, and `npm test` pass.
+6. Push the branch and open a PR per the standard workflow.
+
+## Phase 15: Inline Review CLI Wiring & Non-Per-Line Content Homing (Issue #46, Step 4)
+
+Switches actual delivery from the aggregated comment to the inline review, using Phase 13's line validation and Phase 14's `postPrReview()`.
+
+1. Create a new branch for Phase 15.
+2. In `src/index.ts`'s `--pr` path, build a `comments[]` array from each validated finding (across both personas) and call `postPrReview()` instead of `postPrComment()`.
+3. Home the report content that doesn't anchor to one line — the Sandbox Test section, verdict, and severity/summary counts — in the review's top-level `body`, as a short cover note above the per-line comments.
+4. Verify `npm run typecheck`, `npm run build`, and `npm test` pass, and manually confirm against a real PR that inline comments land on the correct file/line and the cover note reads well.
+5. Push the branch and open a PR per the standard workflow.
+
+## Phase 16: Cross-Chunk Finding Dedup (Issue #46, Step 5)
+
+`mergeChunkedReview()` in `ai-orchestrator.ts` currently just concatenates each chunk's findings — fine while everything funnels into one aggregated comment, less so once every finding becomes its own visible inline comment.
+
+1. Create a new branch for Phase 16.
+2. Add basic dedup logic to `mergeChunkedReview()` for near-identical findings across chunks (e.g. matching file + line + substantially similar description).
+3. Add tests covering a genuine cross-chunk duplicate being merged, and distinct findings on the same file/line being kept separate.
+4. Verify `npm run typecheck`, `npm run build`, and `npm test` pass.
+5. Push the branch and open a PR per the standard workflow.
+
 ## Agent skills
 
 ### Issue tracker
