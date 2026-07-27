@@ -60,6 +60,15 @@ test("a line number outside every hunk fails validation, even if it falls betwee
   assert.equal(validLines.has(100), false);
 });
 
+test("parses the omitted-count hunk header form (`@@ -1 +1 @@`, no comma), a single-line hunk", () => {
+  const singleLineHunk = ["diff --git a/a.ts b/a.ts", "--- a/a.ts", "+++ b/a.ts", "@@ -1 +1 @@", "-old", "+new", ""].join(
+    "\n",
+  );
+
+  const hunks = parseDiffHunks(singleLineHunk);
+  assert.deepEqual(Array.from(hunks.get("a.ts") ?? []).sort((a, b) => a - b), [1]);
+});
+
 test("scopes line numbers per file, so one file's valid lines don't leak into another", () => {
   const twoFileDiff = [
     "diff --git a/a.ts b/a.ts",
@@ -80,6 +89,29 @@ test("scopes line numbers per file, so one file's valid lines don't leak into an
   assert.deepEqual(Array.from(hunks.get("a.ts") ?? []).sort((a, b) => a - b), [1, 2]);
   assert.deepEqual(Array.from(hunks.get("b.ts") ?? []).sort((a, b) => a - b), [5]);
   assert.equal(hunks.get("a.ts")?.has(5), false);
+});
+
+test("doesn't mistake an added source line starting with '++ ' for a file-header line (PR #49 review)", () => {
+  // The diffed form of an added line whose *content* is "++ x;" is literally
+  // "+++ x;" (one "+" from the diff marker, two from the source text) —
+  // indistinguishable from a real "+++ b/path" file header by regex alone
+  // unless it's also checked for being preceded by a "--- " line, which a
+  // mid-hunk content line never is.
+  const diffWithTrickyAddedLine = [
+    "diff --git a/a.ts b/a.ts",
+    "--- a/a.ts",
+    "+++ b/a.ts",
+    "@@ -1,3 +1,4 @@",
+    " line1",
+    "+++ x;",
+    " line2",
+    " line3",
+    "",
+  ].join("\n");
+
+  const hunks = parseDiffHunks(diffWithTrickyAddedLine);
+  assert.deepEqual(Array.from(hunks.get("a.ts") ?? []).sort((a, b) => a - b), [1, 2, 3, 4]);
+  assert.equal(hunks.has("x;"), false, "must not have been misparsed as its own file");
 });
 
 test("ignores a deleted file's hunk (+++ /dev/null), since there's no new-file line to anchor to", () => {
