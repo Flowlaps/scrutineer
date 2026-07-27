@@ -150,6 +150,38 @@ test("postPrReview passes through an explicit event override", async (t) => {
   assert.equal(JSON.parse(capturedInit?.body as string).event, "APPROVE");
 });
 
+test("postPrReview truncates an oversized comment body instead of letting one finding fail the whole review", async (t) => {
+  const originalFetch = global.fetch;
+  let capturedInit: RequestInit | undefined;
+
+  global.fetch = (async (_url: string, init: RequestInit) => {
+    capturedInit = init;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ html_url: "https://github.com/o/r/pull/1#pullrequestreview-3" }),
+    } as Response;
+  }) as typeof fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  const oversizedBody = "x".repeat(70_000);
+  await postPrReview({
+    owner: "o",
+    repo: "r",
+    pr: 1,
+    body: "cover note",
+    comments: [{ path: "src/foo.ts", line: 1, body: oversizedBody }],
+    token: "tok",
+  });
+
+  const sentComments = JSON.parse(capturedInit?.body as string).comments as { body: string }[];
+  assert.ok(sentComments[0]);
+  assert.ok(sentComments[0].body.length <= 65_536);
+  assert.match(sentComments[0].body, /…\(truncated\)$/);
+});
+
 test("postPrReview throws with response detail on a non-ok response", async (t) => {
   const originalFetch = global.fetch;
   global.fetch = (async () =>
