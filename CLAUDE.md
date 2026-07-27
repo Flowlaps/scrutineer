@@ -157,6 +157,8 @@ Issue #46 tracks replacing the aggregated PR comment with native GitHub inline r
 
 The Reviews API (`POST /repos/{owner}/{repo}/pulls/{pr}/reviews`) is a different shape than today's single-comment `postPrComment()`: one `body` (overall summary) plus a `comments[]` array of `{ path, line, body }`, with its own submit semantics.
 
+> **Superseded (see Phase 20).** Step 2's "alongside (not replacing) `postPrComment()`" was correct while both delivery paths were live. Phase 15 then switched `--pr` delivery entirely to `postPrReview()`, leaving `postPrComment()` with no caller in `src/` outside its own tests. Phase 20 removes it. Keep `postPrReview()` as the single delivery function; don't re-add a flat-comment path without a new reason to.
+
 1. Create a new branch for Phase 14.
 2. Add `postPrReview()` to `src/services/github-client.ts`, alongside (not replacing) `postPrComment()`.
 3. Default `event` to `"COMMENT"` — scrutineer is advisory and should not auto-approve or auto-request-changes on a PR.
@@ -183,6 +185,100 @@ Switches actual delivery from the aggregated comment to the inline review, using
 3. Add tests covering a genuine cross-chunk duplicate being merged, and distinct findings on the same file/line being kept separate.
 4. Verify `npm run typecheck`, `npm run build`, and `npm test` pass.
 5. Push the branch and open a PR per the standard workflow.
+
+## Phases 17–21: Simplification Pass
+
+Phases 1–16 grew the tool feature-by-feature under PR review, and the residue shows: `dist/` ships artifacts nothing can consume, comments outweigh code 37:100 in `src/`, `ai-orchestrator.ts` has reached 1,061 lines across six responsibilities, a few helpers outlived their callers, and `docs/ARCHITECTURE.md` last described reality around Phase 11. These five phases pay that down without changing behavior.
+
+Ground rules for all five:
+
+- **No test file is modified**, with one deliberate exception called out in Phase 20. If a change requires editing a test, it changed behavior — revert and reconsider. The 175-test suite is the proof that these phases are behavior-preserving.
+- **One phase per branch/PR**, in order. 19 depends on 18 having cleared the comments it would otherwise relocate, and 21 documents the structure 19 and 20 leave behind — so it runs last, not first.
+
+### Phase 17: Build Output Slimming
+
+`tsconfig.build.json` inherits `declaration: true` and `sourceMap: true` from the base config and never sets `removeComments`, so `dist/` (320 KB) ships three things no consumer can use. Measured on the current build:
+
+- **Comments: 49.3 KB of the 118.9 KB of emitted JS (41%).** `tsc` preserves them by default.
+- **Sourcemaps: 69.1 KB that cannot resolve.** They reference `../../src/*.ts` with no `sourcesContent`, and `package.json`'s `files: ["dist"]` means `src/` is never published.
+- **Declarations: 11.0 KB nothing can import.** `package.json` has `bin` only — no `main`, `exports`, or `types`.
+
+Note this is a bin-only CLI, not a browser bundle: there is no per-pageview download cost and install size is dominated by `isolated-vm`/`ts-morph`/the AI SDKs regardless. Do this for a clean published artifact, not for a performance claim.
+
+1. Create a new branch for Phase 17.
+2. In `tsconfig.build.json` only — leaving `tsconfig.json` untouched so `npm run dev` and `npm run typecheck` keep full fidelity — set `removeComments: true`, `declaration: false`, and `sourceMap: false`.
+3. Confirm `dist/index.js` is still executable (`chmod +x` runs as part of `npm run build`) and that `node dist/index.js --version` prints the version read from `package.json`.
+4. Verify `npm run typecheck`, `npm run build`, and `npm test` pass, and record the before/after `dist/` size in the PR body.
+5. Push the branch and open a PR per the standard workflow.
+
+### Phase 18: Comment Cleanup
+
+`src/` carries 718 comment lines against 1,938 code lines. 55% of them sit in 34 blocks of 8+ consecutive lines, and 43 blocks cite a PR or issue number. These are not "what" comments — they are minutes of PR review meetings written into the source: which reviewer caught which regression, what a constant used to be, what an earlier version of the very same comment got wrong. Git and GitHub already store that, and it crowds out the security rationale that genuinely needs to be read.
+
+The target is code that is self-documenting by default, with comments reserved for what the code cannot say. Sort every comment into one of four buckets:
+
+1. **Keep** — non-obvious "why" that nothing else records. The isolate double-dispose segfault guard (`sandbox.ts`), the `-`-prefixed git ref argument-injection guard (`git-diff.ts`), Ollama's `/api/ps` omitting `capabilities` (`model-factory.ts`), the `+++` file-header ambiguity (`diff-hunks.ts`), and the zero-width-space injection defense — the *rule*, not its revision history.
+2. **Compress** — same rationale, stated once, roughly 15:1. `review-schema.ts`'s 27-line block at `neutralizeBlockStarts` becomes ~4 lines: GFM block-start markers in LLM-authored text can forge a heading out of a list item; a zero-width space defeats pattern-matching invisibly; setext underlines (`-`/`=`) need no minimum length unlike thematic breaks. Which PR caught it goes.
+3. **Delete** — changelog prose ("Doubled from the pre-structured-output value of 4096"), comments correcting earlier versions of themselves, and the four `// Exported so <x>.test.ts can assert…` blocks, which explain nothing the `export` keyword doesn't.
+4. **Defer to Phase 19** — comments that exist only because a symbol is in the wrong file. Leave them; Phase 19 deletes them by moving the code.
+
+Target: ~718 → ~250 comment lines. `ast-parser.ts` (139 lines, zero comments) is the in-repo reference for the intended density.
+
+1. Create a new branch for Phase 18.
+2. Work file-by-file in descending comment density: `review-chunker.ts` (53%), `review-schema.ts` (40%), `ai-orchestrator.ts` (35%), `diff-hunks.ts` (30%), `skill-router.ts` (25%), `github-client.ts` (24%), `model-factory.ts` (22%), then the rest.
+3. **Change no code in this phase** — not a rename, not a reorder. A pure comment diff keeps the PR reviewable at a glance and makes the passing suite meaningful evidence.
+4. Verify `npm run typecheck`, `npm run build`, and `npm test` pass, and report the before/after comment-line count in the PR body.
+5. Push the branch and open a PR per the standard workflow.
+
+### Phase 19: Module Boundaries
+
+`ai-orchestrator.ts` is 1,061 lines carrying six responsibilities: token budgeting, prompt assembly, provider quirks, concurrency, finding dedup, and markdown/HTML rendering. The last two are pure functions with no orchestration in them. Extracting them also deletes comments for free — a module named `markdown-safety.ts` states in its filename what a 27-line block currently argues in prose.
+
+1. Create a new branch for Phase 19.
+2. Extract `src/services/markdown-safety.ts`, consolidating the rendering/injection guards currently split across two files: `singleLine`, `neutralizeBlockStarts`, and `BLOCK_START_PATTERN` from `review-schema.ts`, plus `escapeHtml`, `neutralizeStructuralTags`, and `STRUCTURAL_TAG_PATTERN` from `ai-orchestrator.ts`.
+3. De-duplicate `ZERO_WIDTH_SPACE`, currently defined identically in both `review-schema.ts` and `ai-orchestrator.ts` — `review-schema.ts`'s own comment already points at the other copy.
+4. Extract `src/services/finding-dedup.ts`: `findingDedupeKey`, `descriptionWordSet`, `similarity`, `dedupeFindings`, and `DEDUPE_SIMILARITY_THRESHOLD`.
+5. Fold the two near-identical `startSandboxTest` closures (one per pipeline, ~24 lines each including the same floating-promise `.catch`) into the existing `scheduleSandboxTest` seam, which already exists for exactly this purpose.
+6. Leave `runReviewPipeline`'s and `runChunkedReviewPipeline`'s concurrency ordering alone. It is precisely regression-tested and is the highest-risk surface in these four phases — moving code out from around it is in scope; changing it is not.
+7. Verify `npm run typecheck`, `npm run build`, and `npm test` pass — with no test file edited, including the import paths in existing tests if re-exports can preserve them.
+8. Push the branch and open a PR per the standard workflow.
+
+### Phase 20: API Surface Tidy & Docs Drift
+
+Small helpers that outlived their callers, plus documentation still describing pre-Phase-15 behavior.
+
+1. Create a new branch for Phase 20.
+2. **Remove `postPrComment()`** and `PostPrCommentOptions`/`PostPrCommentResult` from `src/services/github-client.ts`, along with its tests in `github-client.test.ts`. Phase 15 moved `--pr` delivery to `postPrReview()`; nothing in `src/` has called it since. This is the one place in these four phases where a test file is deliberately deleted — removing a function's only remaining caller is the point, not a behavior change smuggled past the suite. Supersedes Phase 14's step 2.
+3. Collapse `github-client.ts`'s three names for `{ url: string }` (`GitHubPostResult` plus two aliases) down to one now that only one write operation remains.
+4. Replace `resolveInlineLocation` (`diff-hunks.ts`) with `resolveInlineLine(finding, hunkLines): number | undefined`. Its `FindingLocation.file` is an unmodified passthrough of `finding.file`, which every caller already holds.
+5. Inline `exceedsMaxTotalFiles` (`review-chunker.ts`) at its single call site in `index.ts` — it wraps `files.length > MAX_TOTAL_FILES`.
+6. Convert `runPersona`'s 8 positional parameters (`ai-orchestrator.ts`, 4 call sites) to a single options object so each call site is self-labeling.
+7. Extract `resolveGithubTarget(options)` and the diff-vs-single-file context building out of the `review` command's ~230-line `.action()` handler in `index.ts`.
+8. Leave all documentation alone — Phase 21 rewrites it in one pass, once the module structure has settled.
+9. Verify `npm run typecheck`, `npm run build`, and `npm test` pass.
+10. Push the branch and open a PR per the standard workflow.
+
+### Phase 21: Architecture Doc Refresh
+
+`docs/ARCHITECTURE.md` was last accurate around Phase 11. Everything since — dynamic skill routing (12), diff-hunk line validation (13), the Reviews API client (14), inline review delivery (15), cross-chunk dedup (16), and the chunked pipeline from issue #35 — is absent, and Phases 17–20 will have moved modules on top of that. Run this **last**, so the doc is written once against the final structure rather than three times against moving parts.
+
+Verified drift to fix:
+
+- **Three broken ADR links.** The doc points at `decisions/000{1,2,3}-*.md`; the files are in `docs/adr/`. All three 404.
+- **Undocumented modules**: `review-chunker.ts`, `skill-router.ts`, `review-schema.ts`, `diff-hunks.ts`, `inline-review.ts`, plus whatever Phase 19 extracts (`markdown-safety.ts`, `finding-dedup.ts`).
+- **Two false claims, both at the `--diff` bullet.** "filtered to `.ts`/`.tsx`" omits `isDynamicSkillTrigger`'s `package.json`/`next.config.*`/lockfile/`*.sql` handling and the lockfile `--stat` substitution. "**one** batch — one `runReviewPipeline` call covering every changed file" stopped being true above `MAX_FILES_PER_CHUNK` files.
+- **Stale delivery description.** The `PR comment (--pr)` Mermaid node and the delivery bullet predate Phase 15 — `--pr` now posts a native GitHub review (cover-note body + per-line inline comments), not a flat issue comment. `README.md`'s usage comment says the same thing.
+- **Free-text findings.** Section 3 describes personas producing prose; they return structured `PersonaReview` objects via `generateObject` against `personaReviewSchema`.
+
+1. Create a new branch for Phase 21.
+2. Fix the three ADR link paths (`decisions/` → `adr/`) and verify every relative link in the doc resolves.
+3. Update the Mermaid flowchart to show the pipeline as it actually runs: the chunked path (`runChunkedReviewPipeline` when a batch exceeds `MAX_FILES_PER_CHUNK`, with `MAX_TOTAL_FILES` as the hard refusal ceiling), skill routing feeding the persona prompts, structured findings, hunk validation, and the inline-review delivery path.
+4. Rewrite the `--diff` bullet's two false claims, and add coverage of the modules listed above.
+5. Update `README.md`'s `--pr` usage comment to match.
+6. Resolve the `dallaskoncir/scrutineer` vs `Flowlaps/scrutineer` inconsistency — `package.json`'s `repository`/`homepage`/`bugs` and the doc's issue links say the former; the git remote and this file's issue-tracker section say the latter. Confirm which is canonical before editing either.
+7. Keep the existing voice: direct, concrete, no corporate register (per Phase 5's tone rule).
+8. Verify every code reference in the doc still resolves against `src/` after Phases 17–20, and that `npm run typecheck`, `npm run build`, and `npm test` pass.
+9. Push the branch and open a PR per the standard workflow.
 
 ## Agent skills
 
