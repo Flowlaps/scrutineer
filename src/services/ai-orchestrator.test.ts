@@ -1078,6 +1078,49 @@ test("dedupeFindings keeps identically-worded findings on different files separa
   assert.equal(result.length, 2, "same wording in two different files is two real findings, not one duplicate");
 });
 
+test("dedupeFindings returns an empty array for an empty findings array", () => {
+  assert.deepEqual(dedupeFindings([]), []);
+});
+
+test("dedupeFindings keeps a file-level finding (no line) and a line-anchored finding on the same file separate, even with identical wording", () => {
+  const fileLevel = finding({ line: undefined, description: "Missing input validation somewhere in this file." });
+  const lineAnchored = finding({ line: 10, description: "Missing input validation somewhere in this file." });
+
+  const result = dedupeFindings([fileLevel, lineAnchored]);
+
+  assert.equal(result.length, 2, "a file-level finding and a line-anchored finding are different scopes, not duplicates");
+});
+
+test("dedupeFindings normalizes case and punctuation before comparing, so two descriptions differing only in those still merge", () => {
+  const a = finding({ description: "Missing a null check on `user` before it's dereferenced!" });
+  const b = finding({ description: "MISSING A NULL CHECK ON `USER` BEFORE IT'S DEREFERENCED!" });
+
+  const result = dedupeFindings([a, b]);
+
+  assert.equal(result.length, 1, `expected case/punctuation-only variance to still merge, got: ${JSON.stringify(result)}`);
+});
+
+test("dedupeFindings is first-occurrence-wins, not transitive: A~B and B~C individually clear the threshold but A~C doesn't, so dropping B loses the link between A and C (documents accepted limitation, PR #52 review)", () => {
+  // Word lists engineered so sim(A,B) ≈ 0.667 and sim(B,C) ≈ 0.667 — both
+  // clear DEDUPE_SIMILARITY_THRESHOLD's 0.6 bar — while sim(A,C) ≈ 0.429 does
+  // not. B is compared only against A (the sole bucket member when B is
+  // processed) and dropped as A's duplicate; C is then compared only against
+  // the still-just-A bucket (B, having been dropped, was never added to it),
+  // so C survives even though it shares its strongest overlap with B, not A.
+  const shared = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+  const a = finding({ description: [...shared, "golf", "hotel", "onlyA1", "onlyA2"].join(" ") });
+  const b = finding({ description: [...shared, "golf", "hotel", "linkX", "linkY"].join(" ") });
+  const c = finding({ description: [...shared, "linkX", "linkY", "onlyC1", "onlyC2"].join(" ") });
+
+  const result = dedupeFindings([a, b, c]);
+
+  assert.deepEqual(
+    result.map((f) => f.description),
+    [a.description, c.description],
+    `expected B dropped as A's duplicate and C to survive, got: ${JSON.stringify(result.map((f) => f.description))}`,
+  );
+});
+
 test("runChunkedReviewPipeline merges a cross-chunk duplicate finding in the aggregated codeReview.review.findings", async () => {
   resetState();
   customFindingsQueue["code-reviewer"] = [

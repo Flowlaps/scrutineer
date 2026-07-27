@@ -796,6 +796,13 @@ function descriptionWordSet(finding: ReviewFinding): Set<string> {
 // comment while over-merging would silently drop a real, distinct finding.
 const DEDUPE_SIMILARITY_THRESHOLD = 0.6;
 
+// Returns 1 for two empty word sets — unreachable in practice today since
+// reviewFindingSchema requires `description` to be non-empty LLM prose (so a
+// word set can only be empty if the whole description strips down to no
+// alphanumeric characters at all), but worth flagging: if that schema
+// constraint ever loosens, two findings with an empty/symbols-only
+// description on the same file+line would silently auto-merge under this
+// definition (PR #52 review).
 function similarity(a: Set<string>, b: Set<string>): number {
   if (a.size === 0 && b.size === 0) {
     return 1;
@@ -815,28 +822,43 @@ function similarity(a: Set<string>, b: Set<string>): number {
 // 4), a near-identical finding surfacing twice — once from each of two chunks
 // that happen to both touch the same shared file — reads as a real defect in
 // the review rather than harmless repetition the way it did when everything
-// funneled into one aggregated comment. Keeps the first occurrence (in the
-// order chunks were merged) and drops any later finding that matches an
-// already-kept one on both file+line (see findingDedupeKey) and description
-// similarity (see similarity/DEDUPE_SIMILARITY_THRESHOLD) — a linear scan
-// rather than a hash map, since a single batch's finding count is small
-// enough (bounded by MAX_FILES_PER_CHUNK-sized chunks) that O(n^2) never
-// matters in practice. Exported so ai-orchestrator.test.ts can exercise it
+// funneled into one aggregated comment.
+//
+// Bucketed by file+line (see findingDedupeKey) via a Map, so the relatively
+// expensive similarity() comparison only ever runs against other findings
+// that already share the same file+line, not against the full flattened
+// finding list across every chunk in the batch (PR #52 review: the batch
+// total, not one chunk's count, is what dedupeFindings actually sees — a
+// prior version of this comment cited MAX_FILES_PER_CHUNK, which bounds a
+// single chunk's size, not the merged total this function runs on). Within a
+// bucket, keeps the first occurrence (in the order findings were merged) and
+// drops any later one that clears DEDUPE_SIMILARITY_THRESHOLD against an
+// already-kept bucket member. That's first-occurrence-wins, not transitive:
+// a three-way chain A~B~C where A~B and B~C both individually clear the
+// threshold but A~C doesn't keeps both A and C, since B — the link between
+// them — is the one that gets dropped as C's comparison point never sees it.
+// Accepted as a coarse best-effort limitation (PR #52 review) rather than
+// solved here; under-merging in that case just leaves one redundant comment,
+// not a lost finding. Exported so ai-orchestrator.test.ts can exercise it
 // directly against plain ReviewFinding fixtures instead of driving the whole
 // mocked pipeline just to reach this logic.
 export function dedupeFindings(findings: ReviewFinding[]): ReviewFinding[] {
-  const kept: { finding: ReviewFinding; key: string; words: Set<string> }[] = [];
+  const buckets = new Map<string, { words: Set<string> }[]>();
   const result: ReviewFinding[] = [];
   for (const finding of findings) {
     const key = findingDedupeKey(finding);
     const words = descriptionWordSet(finding);
-    const isDuplicate = kept.some(
-      (candidate) => candidate.key === key && similarity(candidate.words, words) >= DEDUPE_SIMILARITY_THRESHOLD,
-    );
-    if (!isDuplicate) {
-      kept.push({ finding, key, words });
-      result.push(finding);
+    const bucket = buckets.get(key);
+    if (bucket) {
+      const isDuplicate = bucket.some((candidate) => similarity(candidate.words, words) >= DEDUPE_SIMILARITY_THRESHOLD);
+      if (isDuplicate) {
+        continue;
+      }
+      bucket.push({ words });
+    } else {
+      buckets.set(key, [{ words }]);
     }
+    result.push(finding);
   }
   return result;
 }
