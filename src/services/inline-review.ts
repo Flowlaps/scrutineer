@@ -30,8 +30,12 @@ const PERSONA_LABELS = {
   securityAudit: "Security Audit",
 } as const;
 
+// `file` is untrusted, LLM-echoed diff content just like severity/title (see
+// review-schema.ts's findingLocation()) — singleLine() it before
+// interpolating, or an embedded blank line forges a heading straight into the
+// cover note's "Additional Findings" bullet (PR #51 review).
 function findingHeading(personaLabel: string, finding: ReviewFinding, file?: string): string {
-  const prefix = file ? `[${file}] ` : "";
+  const prefix = file ? `[${singleLine(file)}] ` : "";
   const titlePart = finding.title ? `: ${singleLine(finding.title)}` : "";
   return `${prefix}**${personaLabel} — ${singleLine(finding.severity)}${titlePart}**`;
 }
@@ -39,8 +43,15 @@ function findingHeading(personaLabel: string, finding: ReviewFinding, file?: str
 // The body of a single GitHub inline review comment. No location prefix —
 // the comment's own path/line already anchors it — just persona, severity,
 // title, and the (heading-injection-neutralized) description.
+//
+// Passes guardFirstLine: true to neutralizeBlockStarts, unlike
+// review-schema.ts's renderFinding(): here the description sits on its own
+// line after a blank line (not fused onto the heading's source line), so a
+// leading block-start marker in the description's first line is just as
+// exploitable as one in any later line (PR #51 review — confirmed against a
+// real GitHub-rendered comment).
 function findingCommentBody(personaLabel: string, finding: ReviewFinding): string {
-  return `${findingHeading(personaLabel, finding)}\n\n${neutralizeBlockStarts(finding.description)}`;
+  return `${findingHeading(personaLabel, finding)}\n\n${neutralizeBlockStarts(finding.description, true)}`;
 }
 
 function findingsSummaryLine(label: string, findings: ReviewFinding[]): string {
@@ -57,7 +68,7 @@ function buildCoverNote(result: ReviewResult, commentCount: number, unanchored: 
   const lines: string[] = ["# Scrutineer Review", ""];
 
   if (result.codeReview.review.verdict) {
-    lines.push(`**Verdict:** ${result.codeReview.review.verdict}`, "");
+    lines.push(`**Verdict:** ${singleLine(result.codeReview.review.verdict)}`, "");
   }
 
   lines.push(

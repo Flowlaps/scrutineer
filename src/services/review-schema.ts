@@ -121,10 +121,25 @@ const BLOCK_START_PATTERN =
 // renders finding descriptions into standalone GitHub comment bodies and
 // needs the identical multi-line block-injection guard this module already
 // applies to the aggregated markdown report.
-export function neutralizeBlockStarts(text: string): string {
+//
+// `guardFirstLine` defaults to false because renderFinding() below (this
+// function's original caller) fuses line 0 onto the same source line as the
+// bullet marker/heading (`- [loc] **title** ${neutralizeBlockStarts(desc)}`),
+// so a block-start marker there can't actually break out onto its own line —
+// it stays mid-sentence in the same list item. A caller that instead puts
+// `text` on its own line (e.g. after a blank-line-separated heading, the way
+// inline-review.ts's findingCommentBody() does) does NOT get that same
+// protection for free and must pass `guardFirstLine: true`, or a leading
+// `#`/`>`/list-marker/fence in line 0 renders as a real block start (PR #51
+// review — confirmed against a real GitHub-rendered comment).
+export function neutralizeBlockStarts(text: string, guardFirstLine = false): string {
   return text
     .split("\n")
-    .map((line, i) => (i === 0 ? line : line.replace(BLOCK_START_PATTERN, (_match, indent: string, marker: string) => `${indent}${ZERO_WIDTH_SPACE}${marker}`)))
+    .map((line, i) =>
+      i === 0 && !guardFirstLine
+        ? line
+        : line.replace(BLOCK_START_PATTERN, (_match, indent: string, marker: string) => `${indent}${ZERO_WIDTH_SPACE}${marker}`),
+    )
     .join("\n");
 }
 

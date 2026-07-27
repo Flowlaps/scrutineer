@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderPersonaReviewMarkdown, type PersonaReview } from "./review-schema.js";
+import { neutralizeBlockStarts, renderPersonaReviewMarkdown, type PersonaReview } from "./review-schema.js";
 
 function baseReview(overrides: Partial<PersonaReview> = {}): PersonaReview {
   return {
@@ -235,4 +235,15 @@ test("leaves an ordinary multi-paragraph description readable, not mangled, when
   );
 
   assert.match(markdown, /First paragraph explaining the issue\.\n\nSecond paragraph with a suggested fix\./);
+});
+
+test("neutralizeBlockStarts leaves line 0 alone by default, but guards it too when guardFirstLine is true (PR #51 review)", () => {
+  const text = "# Forged Heading\nmore text";
+
+  assert.equal(neutralizeBlockStarts(text), text, "default behavior: line 0 untouched (fused-onto-bullet callers)");
+
+  const guarded = neutralizeBlockStarts(text, true);
+  assert.notEqual(guarded, text);
+  assert.doesNotMatch(guarded, /^# Forged Heading$/m);
+  assert.match(guarded, /Forged Heading/, "text itself should still be visible, just neutralized");
 });

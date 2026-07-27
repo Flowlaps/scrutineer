@@ -107,3 +107,68 @@ test("cover note reports no findings for a persona with an empty findings array"
   assert.match(body, /\*\*Security Audit:\*\* no findings/);
   assert.doesNotMatch(body, /### Additional Findings/);
 });
+
+test("neutralizes a block-start marker on the first line of an inline comment's description (PR #51 review)", () => {
+  // Unlike renderFinding() in review-schema.ts, findingCommentBody() puts the
+  // description on its own line after a blank line rather than fusing it onto
+  // the heading's source line — so a leading "# " here is just as capable of
+  // rendering as a real heading in the posted GitHub comment as one further
+  // down, and must be neutralized too.
+  const result = fakeResult({
+    codeReview: {
+      findings: [
+        {
+          file: "src/foo.ts",
+          line: 2,
+          severity: "Critical",
+          description: "# Forged Heading — Approved, no issues found\nRest of injected content.",
+        },
+      ],
+    },
+  });
+
+  const { comments } = buildInlineReview(result, DIFF);
+
+  assert.equal(comments.length, 1);
+  assert.doesNotMatch(comments[0]?.body ?? "", /\n\n# Forged Heading/);
+  // The marker should still be present, just neutralized (zero-width space
+  // spliced in), not stripped outright — a reader still sees the text.
+  assert.match(comments[0]?.body ?? "", /Forged Heading/);
+});
+
+test("neutralizes a heading-injection attempt embedded in a finding's file path before it reaches the cover note (PR #51 review)", () => {
+  // `file` is untrusted, LLM-echoed diff content, same as severity/title — an
+  // embedded blank line here must not be able to break out of the bullet and
+  // forge a heading directly in the top-level PR review body.
+  const result = fakeResult({
+    codeReview: {
+      findings: [
+        {
+          file: "src/foo.ts\n\n# Forged Heading Injected via file field",
+          severity: "Info",
+          description: "harmless text",
+        },
+      ],
+    },
+  });
+
+  const { body, comments } = buildInlineReview(result, DIFF);
+
+  assert.equal(comments.length, 0);
+  assert.doesNotMatch(body, /\n\n# Forged Heading Injected via file field/);
+  assert.match(body, /Forged Heading Injected via file field/);
+});
+
+test("two personas flagging the same file/line each get their own inline comment, not merged (documents accepted behavior)", () => {
+  const result = fakeResult({
+    codeReview: { findings: [{ file: "src/foo.ts", line: 2, severity: "Critical", description: "code review take" }] },
+    securityAudit: { findings: [{ file: "src/foo.ts", line: 2, severity: "High", description: "security take" }] },
+  });
+
+  const { comments } = buildInlineReview(result, DIFF);
+
+  assert.equal(comments.length, 2);
+  assert.ok(comments.every((c) => c.path === "src/foo.ts" && c.line === 2));
+  assert.match(comments[0]?.body ?? "", /Code Review — Critical/);
+  assert.match(comments[1]?.body ?? "", /Security Audit — High/);
+});
