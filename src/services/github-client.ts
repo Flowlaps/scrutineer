@@ -35,22 +35,22 @@ export function getRepoSlugFromGit(): RepoSlug | undefined {
   return parseGitHubRemote(url);
 }
 
-export interface PostPrCommentOptions {
-  owner: string;
-  repo: string;
-  pr: number;
-  body: string;
-  token: string;
-}
-
-export interface PostPrCommentResult {
+/** Shared result shape for both write operations below — each just wraps the created object's `html_url`. */
+export interface GitHubPostResult {
   url: string;
 }
 
-export async function postPrComment(options: PostPrCommentOptions): Promise<PostPrCommentResult> {
-  const { owner, repo, pr, body, token } = options;
-  const url = `https://api.github.com/repos/${owner}/${repo}/issues/${pr}/comments`;
+export type PostPrCommentResult = GitHubPostResult;
+export type PostPrReviewResult = GitHubPostResult;
 
+/**
+ * Shared POST + error-handling logic for both `postPrComment()` and
+ * `postPrReview()` (PR #50 review) — same headers, same fetch, same
+ * "throw with GitHub's response detail on non-ok" pattern either way, just a
+ * different URL/payload/error label. Keeps the two error message strings
+ * from being able to drift independently.
+ */
+async function postToGitHub<T>(url: string, token: string, payload: unknown, operation: string): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -59,16 +59,85 @@ export async function postPrComment(options: PostPrCommentOptions): Promise<Post
       "X-GitHub-Api-Version": "2022-11-28",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ body }),
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(
-      `Failed to post PR comment (HTTP ${response.status}): ${detail || response.statusText}`,
-    );
+    throw new Error(`Failed to ${operation} (HTTP ${response.status}): ${detail || response.statusText}`);
   }
 
-  const json = (await response.json()) as { html_url: string };
+  return (await response.json()) as T;
+}
+
+export interface PostPrCommentOptions {
+  owner: string;
+  repo: string;
+  pr: number;
+  body: string;
+  token: string;
+}
+
+export async function postPrComment(options: PostPrCommentOptions): Promise<PostPrCommentResult> {
+  const { owner, repo, pr, body, token } = options;
+  const url = `https://api.github.com/repos/${owner}/${repo}/issues/${pr}/comments`;
+
+  const json = await postToGitHub<{ html_url: string }>(url, token, { body }, "post PR comment");
+  return { url: json.html_url };
+}
+
+export interface PrReviewComment {
+  path: string;
+  line: number;
+  body: string;
+}
+
+export interface PostPrReviewOptions {
+  owner: string;
+  repo: string;
+  pr: number;
+  body: string;
+  comments: PrReviewComment[];
+  token: string;
+  /**
+   * Scrutineer is advisory, not a gatekeeper — it should never auto-approve
+   * or auto-block a PR on the user's behalf, so this defaults to "COMMENT"
+   * rather than "APPROVE"/"REQUEST_CHANGES".
+   */
+  event?: "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
+}
+
+// GitHub's own review/issue comment body limit is 65536 characters; the
+// Reviews API is a single all-or-nothing POST, so one oversized comment
+// (e.g. a persona hallucinating a very long finding) would otherwise fail
+// the whole review and silently drop every other, valid finding along with
+// it (PR #50 review). Truncating client-side lets the rest of the batch
+// still land.
+const MAX_COMMENT_BODY_LENGTH = 65536;
+const TRUNCATION_SUFFIX = "\n\n…(truncated)";
+
+function truncateCommentBody(body: string): string {
+  if (body.length <= MAX_COMMENT_BODY_LENGTH) {
+    return body;
+  }
+  return body.slice(0, MAX_COMMENT_BODY_LENGTH - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
+}
+
+/**
+ * Posts a native GitHub review (`POST .../pulls/{pr}/reviews`) with a
+ * top-level summary `body` plus per-line `comments`, instead of
+ * `postPrComment()`'s single flat issue comment (issue #46).
+ */
+export async function postPrReview(options: PostPrReviewOptions): Promise<PostPrReviewResult> {
+  const { owner, repo, pr, body, comments, token, event = "COMMENT" } = options;
+  const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${pr}/reviews`;
+
+  const boundedComments = comments.map((comment) => ({ ...comment, body: truncateCommentBody(comment.body) }));
+  const json = await postToGitHub<{ html_url: string }>(
+    url,
+    token,
+    { body, event, comments: boundedComments },
+    "post PR review",
+  );
   return { url: json.html_url };
 }
