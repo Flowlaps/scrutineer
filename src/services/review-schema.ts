@@ -99,8 +99,21 @@ function singleLine(text: string): string {
 // these constructs even without a full blank line separating them). The
 // invisible character breaks pattern recognition without changing what a human
 // reader sees.
+//
+// The dash/equals alternatives below (`(?:-[ \t]*){1,}$` / `(?:=[ \t]*){1,}$`)
+// intentionally have no minimum repeat count, unlike the underscore/asterisk
+// thematic-break alternatives (which need 3+): a CommonMark setext heading
+// underline is a bare `-` or `=` — no minimum length, no trailing content
+// required — and promotes the *preceding* line into a real heading regardless.
+// An earlier version of this pattern required `{3,}` uniformly and missed
+// exactly this (verified against a real CommonMark renderer during PR #48's
+// review — a lone `-` or `=` line reproduced the same forged-heading result as
+// the ATX-heading case this function already handled). The `[ \t]*` inside the
+// repetition (rather than a trailing `\s*`) also catches the space-separated
+// thematic-break form (`- - -`), not just contiguous runs (`---`).
 const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
-const BLOCK_START_PATTERN = /^(\s{0,3})(#{1,6}\s|>|-{3,}\s*$|\*{3,}\s*$|_{3,}\s*$|={3,}\s*$|[-*+]\s|\d+[.)]\s|```|~~~)/;
+const BLOCK_START_PATTERN =
+  /^(\s{0,3})(#{1,6}\s|>|(?:-[ \t]*){1,}$|(?:=[ \t]*){1,}$|(?:_[ \t]*){3,}$|(?:\*[ \t]*){3,}$|[-*+]\s|\d+[.)]\s|```|~~~)/;
 function neutralizeBlockStarts(text: string): string {
   return text
     .split("\n")
