@@ -1,10 +1,6 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    // Published output only. The base config keeps comments, declarations, and
-    // sourcemaps for `npm run dev` and `npm run typecheck`; none of the three
-    // has a consumer in the tarball, since `files: ["dist"]` never ships `src/`
-    // and the package exposes `bin` alone (no `main`/`exports`/`types`).
     "removeComments": true,
     "declaration": false,
     "sourceMap": false
