@@ -275,7 +275,7 @@ Verified drift to fix:
 3. Update the Mermaid flowchart to show the pipeline as it actually runs: the chunked path (`runChunkedReviewPipeline` when a batch exceeds `MAX_FILES_PER_CHUNK`, with `MAX_TOTAL_FILES` as the hard refusal ceiling), skill routing feeding the persona prompts, structured findings, hunk validation, and the inline-review delivery path.
 4. Rewrite the `--diff` bullet's two false claims, and add coverage of the modules listed above.
 5. Update `README.md`'s `--pr` usage comment to match.
-6. Resolve the `dallaskoncir/scrutineer` vs `Flowlaps/scrutineer` inconsistency — `package.json`'s `repository`/`homepage`/`bugs` and the doc's issue links say the former; the git remote and this file's issue-tracker section say the latter. Confirm which is canonical before editing either.
+6. Repo identity is settled: **`Flowlaps/scrutineer` is canonical** — the migration off `dallaskoncir/scrutineer` was deliberate. The stale pointers are fixed separately, ahead of this phase; if any remain, correct them. Note that `github-client.test.ts` uses `dallaskoncir/scrutineer` as *fixture input* to `parseGitHubRemote()` — that is arbitrary sample data, not a reference to this repo, and must be left alone.
 7. Keep the existing voice: direct, concrete, no corporate register (per Phase 5's tone rule).
 8. Verify every code reference in the doc still resolves against `src/` after Phases 17–20, and that `npm run typecheck`, `npm run build`, and `npm test` pass.
 9. Push the branch and open a PR per the standard workflow.
