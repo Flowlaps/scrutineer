@@ -1,8 +1,13 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { APICallError } from "ai";
+import { APICallError, NoObjectGeneratedError } from "ai";
+import type { PersonaReview } from "./review-schema.js";
 
 type Kind = "code-reviewer" | "security-auditor" | "test-generator";
+// The two review personas go through generateObject; test-generator (sandbox
+// test generation) still goes through generateText, unchanged by this file's
+// migration to structured findings (see ai-orchestrator.ts's runPersona).
+type PersonaKind = "code-reviewer" | "security-auditor";
 
 interface RecordedCall {
   kind: Kind;
@@ -13,6 +18,10 @@ interface RecordedCall {
   hasSystemCacheControl: boolean;
   hasUserCacheControl: boolean;
   hasAbortSignal: boolean;
+  // Only ever set for test-generator's generateText call — generateObject's
+  // options type has no `timeout` field (see the comment on the boundedSignal
+  // in runPersona()), so a persona call's timeout bound lives inside its
+  // abortSignal instead of as its own recorded property.
   timeoutMs: number | undefined;
   maxOutputTokens: number | undefined;
 }
@@ -22,19 +31,26 @@ interface SystemPart {
   providerOptions?: unknown;
 }
 
-interface GenerateTextOpts {
+interface CommonCallOpts {
   system: string | SystemPart | SystemPart[];
   messages: Array<{ content: Array<{ text: string; providerOptions?: unknown }> }>;
   abortSignal?: AbortSignal;
-  timeout?: number;
   maxOutputTokens?: number;
+}
+
+interface GenerateTextOpts extends CommonCallOpts {
+  timeout?: number;
+}
+
+interface GenerateObjectOpts extends CommonCallOpts {
+  schema: unknown;
 }
 
 // The persona's base prompt and the dynamic skill additions (skill-router.ts)
 // are sent as separate system parts (an array) so the base prompt keeps its
 // own cache breakpoint — see the comment on basePart in runPersona(). Tests
 // below work with the combined text/cache-control state across every part.
-function systemParts(system: GenerateTextOpts["system"]): SystemPart[] {
+function systemParts(system: CommonCallOpts["system"]): SystemPart[] {
   if (typeof system === "string") return [{ content: system }];
   return Array.isArray(system) ? system : [system];
 }
@@ -47,13 +63,31 @@ const FIXED_USAGE = {
   totalTokens: 150,
 };
 
+const FIXED_RESPONSE_METADATA = { id: "mock-response", timestamp: new Date(0), modelId: "mock-model" };
+
+function defaultReview(kind: PersonaKind): PersonaReview {
+  // Renders (via renderPersonaReviewMarkdown) to exactly "${kind}-output" —
+  // every other field is empty/unset, so aggregate()'s markdown output stays
+  // byte-identical to this suite's pre-structured-output expectations.
+  return { summary: `${kind}-output`, findings: [], positiveObservations: [], additionalNotes: [] };
+}
+
 let calls: RecordedCall[] = [];
 let delaysMs: Partial<Record<Kind, number>> = {};
 let errorsAfterMs: Partial<Record<Kind, number>> = {};
-// Simulates generateText hitting maxOutputTokens (issue #33). `text` lets a
-// test control whether the truncated response still has partial content or
-// came back fully empty, since the two need different handling downstream.
+// Simulates generateText (test-generator only) hitting maxOutputTokens (issue
+// #33). `text` lets a test control whether the truncated response still has
+// partial content or came back fully empty, since the two need different
+// handling downstream.
 let lengthTruncated: Partial<Record<Kind, { text: string }>> = {};
+// Simulates generateObject's own truncation failure modes (issue #33's
+// structured-output counterpart — see runPersona's NoObjectGeneratedError
+// handling): "unparseable" throws NoObjectGeneratedError with finishReason
+// "length" (the realistic case — truncated JSON usually fails schema
+// validation outright); "parsed" returns a valid object that still happens to
+// report finishReason "length" (the model finished its JSON right as the
+// budget ran out).
+let objectLengthTruncated: Partial<Record<PersonaKind, "unparseable" | "parsed">> = {};
 // A call that never resolves on its own — only settles once its abortSignal
 // fires. Guarded by a long fallback timer so a regression in the abort wiring
 // makes the assertion fail instead of hanging the test suite forever.
@@ -68,10 +102,11 @@ let maxObservedPersonaConcurrency = 0;
 let notFoundError: Partial<Record<Kind, boolean>> = {};
 // Simulates an arbitrary non-2xx APICallError (e.g. the "Bad Request" from GH #22).
 let badRequestError: Partial<Record<Kind, { responseBody?: string }>> = {};
-// Lets a test control a persona's exact returned text, instead of the default
-// "${kind}-output" placeholder — needed to exercise how runChunkedReviewPipeline's
-// aggregate() handles model output containing HTML-structural text (PR #43 review).
-let customOutputText: Partial<Record<Kind, string>> = {};
+// Lets a test control a persona's exact returned summary, instead of the
+// default "${kind}-output" placeholder — needed to exercise how
+// runChunkedReviewPipeline's aggregate() handles model output containing
+// HTML-structural text (PR #43 review).
+let customOutputText: Partial<Record<PersonaKind, string>> = {};
 
 function resetState(): void {
   calls = [];
@@ -81,19 +116,84 @@ function resetState(): void {
   notFoundError = {};
   badRequestError = {};
   lengthTruncated = {};
+  objectLengthTruncated = {};
   customOutputText = {};
   activePersonaCalls = 0;
   maxObservedPersonaConcurrency = 0;
 }
 
-function classify(system: GenerateTextOpts["system"]): Kind {
+function classify(system: CommonCallOpts["system"]): Kind {
   const text = systemParts(system)[0]?.content ?? "";
-  // The base persona part now has the output-efficiency instructions folded into
-  // the same cached string (see the comment on basePart in runPersona()), so this
-  // is a prefix match rather than exact equality.
+  // The base persona part now has the output-efficiency instructions and the
+  // schema-mapping bridge folded into the same cached string (see the comment
+  // on basePart in runPersona()), so this is a prefix match rather than exact
+  // equality.
   if (text.startsWith("CODE_REVIEWER_SYSTEM")) return "code-reviewer";
   if (text.startsWith("SECURITY_AUDITOR_SYSTEM")) return "security-auditor";
   return "test-generator";
+}
+
+function recordCall(kind: Kind, opts: CommonCallOpts, timeoutMs: number | undefined): void {
+  const parts = systemParts(opts.system);
+  calls.push({
+    kind,
+    startedAt: Date.now(),
+    systemText: parts.map((part) => part.content).join("\n\n"),
+    systemPartCacheControl: parts.map((part) => part.providerOptions !== undefined),
+    userText: opts.messages[0]?.content.map((part) => part.text).join("") ?? "",
+    hasSystemCacheControl: parts.some((part) => part.providerOptions !== undefined),
+    hasUserCacheControl: opts.messages[0]?.content[0]?.providerOptions !== undefined,
+    hasAbortSignal: opts.abortSignal instanceof AbortSignal,
+    timeoutMs,
+    maxOutputTokens: opts.maxOutputTokens,
+  });
+}
+
+// Shared setup/error-simulation for both mocked calls below: tracks
+// concurrency, waits out hangUntilAborted/delaysMs, and throws the configured
+// APICallError/generic error. Returns `true` once the caller should proceed to
+// its own (generateText- or generateObject-shaped) success/truncation branch.
+async function runSharedSetup(kind: Kind, abortSignal: AbortSignal | undefined): Promise<void> {
+  const tracksConcurrency = kind !== "test-generator";
+  if (tracksConcurrency) {
+    activePersonaCalls++;
+    maxObservedPersonaConcurrency = Math.max(maxObservedPersonaConcurrency, activePersonaCalls);
+  }
+  if (hangUntilAborted[kind]) {
+    await new Promise<void>((resolve, reject) => {
+      const fallback = setTimeout(resolve, 5000);
+      abortSignal?.addEventListener("abort", () => {
+        clearTimeout(fallback);
+        reject(new Error(`${kind} aborted`));
+      });
+    });
+  }
+
+  const delay = delaysMs[kind] ?? errorsAfterMs[kind] ?? 0;
+  if (delay > 0) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  if (notFoundError[kind]) {
+    throw new APICallError({
+      message: "Not Found",
+      url: "http://127.0.0.1:11434/api/chat",
+      requestBodyValues: {},
+      statusCode: 404,
+    });
+  }
+  if (badRequestError[kind]) {
+    const { responseBody } = badRequestError[kind]!;
+    throw new APICallError({
+      message: "Bad Request",
+      url: "http://127.0.0.1:11434/api/chat",
+      requestBodyValues: {},
+      statusCode: 400,
+      ...(responseBody !== undefined ? { responseBody } : {}),
+    });
+  }
+  if (errorsAfterMs[kind] !== undefined) {
+    throw new Error(`${kind} failed`);
+  }
 }
 
 // Mocks must be registered before the module under test is imported, since ESM
@@ -102,77 +202,49 @@ function classify(system: GenerateTextOpts["system"]): Kind {
 // `errorsAfterMs`/etc. state instead of re-mocking per test.
 mock.module("ai", {
   namedExports: {
-    // ai-orchestrator.ts imports this alongside generateText, so it must be
-    // re-exported here too — mock.module replaces the whole module rather than
-    // merging with the real one. Reusing the real class (imported above, before
-    // this mock takes effect) means APICallError.isInstance() still works on
-    // errors thrown below.
+    // ai-orchestrator.ts imports these alongside generateText/generateObject,
+    // so they must be re-exported here too — mock.module replaces the whole
+    // module rather than merging with the real one. Reusing the real classes
+    // (imported above, before this mock takes effect) means
+    // APICallError.isInstance()/NoObjectGeneratedError.isInstance() still work
+    // on errors thrown below.
     APICallError,
+    NoObjectGeneratedError,
     generateText: async (opts: GenerateTextOpts) => {
       const kind = classify(opts.system);
-      const parts = systemParts(opts.system);
-      calls.push({
-        kind,
-        startedAt: Date.now(),
-        systemText: parts.map((part) => part.content).join("\n\n"),
-        systemPartCacheControl: parts.map((part) => part.providerOptions !== undefined),
-        userText: opts.messages[0]?.content.map((part) => part.text).join("") ?? "",
-        hasSystemCacheControl: parts.some((part) => part.providerOptions !== undefined),
-        hasUserCacheControl: opts.messages[0]?.content[0]?.providerOptions !== undefined,
-        hasAbortSignal: opts.abortSignal instanceof AbortSignal,
-        timeoutMs: opts.timeout,
-        maxOutputTokens: opts.maxOutputTokens,
-      });
-
-      const tracksConcurrency = kind !== "test-generator";
-      if (tracksConcurrency) {
-        activePersonaCalls++;
-        maxObservedPersonaConcurrency = Math.max(maxObservedPersonaConcurrency, activePersonaCalls);
-      }
+      recordCall(kind, opts, opts.timeout);
       try {
-        if (hangUntilAborted[kind]) {
-          await new Promise<void>((resolve, reject) => {
-            const fallback = setTimeout(resolve, 5000);
-            opts.abortSignal?.addEventListener("abort", () => {
-              clearTimeout(fallback);
-              reject(new Error(`${kind} aborted`));
-            });
-          });
-        }
-
-        const delay = delaysMs[kind] ?? errorsAfterMs[kind] ?? 0;
-        if (delay > 0) {
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-        if (notFoundError[kind]) {
-          throw new APICallError({
-            message: "Not Found",
-            url: "http://127.0.0.1:11434/api/chat",
-            requestBodyValues: {},
-            statusCode: 404,
-          });
-        }
-        if (badRequestError[kind]) {
-          const { responseBody } = badRequestError[kind]!;
-          throw new APICallError({
-            message: "Bad Request",
-            url: "http://127.0.0.1:11434/api/chat",
-            requestBodyValues: {},
-            statusCode: 400,
-            ...(responseBody !== undefined ? { responseBody } : {}),
-          });
-        }
-        if (errorsAfterMs[kind] !== undefined) {
-          throw new Error(`${kind} failed`);
-        }
+        await runSharedSetup(kind, opts.abortSignal);
         if (lengthTruncated[kind]) {
           return { text: lengthTruncated[kind]!.text, usage: FIXED_USAGE, finishReason: "length" };
         }
-        return { text: customOutputText[kind] ?? `${kind}-output`, usage: FIXED_USAGE, finishReason: "stop" };
+        return { text: `${kind}-output`, usage: FIXED_USAGE, finishReason: "stop" };
       } finally {
-        if (tracksConcurrency) {
+        if (kind !== "test-generator") {
           activePersonaCalls--;
         }
+      }
+    },
+    generateObject: async (opts: GenerateObjectOpts) => {
+      const kind = classify(opts.system) as PersonaKind;
+      recordCall(kind, opts, undefined);
+      try {
+        await runSharedSetup(kind, opts.abortSignal);
+        if (objectLengthTruncated[kind] === "unparseable") {
+          throw new NoObjectGeneratedError({
+            message: "No object generated: response did not match schema.",
+            response: FIXED_RESPONSE_METADATA,
+            usage: FIXED_USAGE,
+            finishReason: "length",
+          });
+        }
+        const object: PersonaReview = customOutputText[kind]
+          ? { ...defaultReview(kind), summary: customOutputText[kind]! }
+          : defaultReview(kind);
+        const finishReason = objectLengthTruncated[kind] === "parsed" ? "length" : "stop";
+        return { object, usage: FIXED_USAGE, finishReason };
+      } finally {
+        activePersonaCalls--;
       }
     },
   },
@@ -219,8 +291,8 @@ test("returns the codeReview/securityAudit/sandboxTest shape assembled from all 
   const result = await runReviewPipeline(baseInput);
 
   assert.deepEqual(result, {
-    codeReview: "code-reviewer-output",
-    securityAudit: "security-auditor-output",
+    codeReview: { markdown: "code-reviewer-output", review: defaultReview("code-reviewer") },
+    securityAudit: { markdown: "security-auditor-output", review: defaultReview("security-auditor") },
     sandboxTest: {
       code: "test-generator-output",
       result: { ok: true, logs: [], errors: [] },
@@ -337,7 +409,7 @@ test("aborts the concurrent sandbox-test call as soon as code-review fails, inst
   );
 });
 
-test("every generateText call is bounded by a numeric timeout and an abort signal", async () => {
+test("every call is bounded by an abort signal, and the generateText (test-generator) call also carries an explicit numeric timeout", async () => {
   resetState();
 
   await runReviewPipeline(baseInput);
@@ -345,8 +417,15 @@ test("every generateText call is bounded by a numeric timeout and an abort signa
   assert.ok(calls.length > 0);
   for (const call of calls) {
     assert.equal(call.hasAbortSignal, true, `${call.kind} call is missing an abortSignal`);
-    assert.equal(typeof call.timeoutMs, "number", `${call.kind} call is missing a numeric timeout`);
-    assert.ok(call.timeoutMs! > 0, `${call.kind} call's timeout should be a positive bound`);
+    if (call.kind === "test-generator") {
+      // generateText accepts a `timeout` option directly.
+      assert.equal(typeof call.timeoutMs, "number", `${call.kind} call is missing a numeric timeout`);
+      assert.ok(call.timeoutMs! > 0, `${call.kind} call's timeout should be a positive bound`);
+    } else {
+      // generateObject has no `timeout` option — the bound lives inside the
+      // combined abortSignal itself instead (see runPersona's boundedSignal).
+      assert.equal(call.timeoutMs, undefined, `${call.kind} call unexpectedly recorded a generateText-style timeout`);
+    }
   }
 });
 
@@ -436,7 +515,7 @@ test("warns on stderr when the AST context or diff is truncated, instead of sile
   );
 });
 
-test("warns on stderr and appends a visible notice when a persona response hits the output token cap with partial text (GH #33)", async (t) => {
+test("warns on stderr and appends a visible notice when a persona response hits the output token cap but still parses (GH #33)", async (t) => {
   resetState();
   const messages: string[] = [];
   const originalConsoleError = console.error;
@@ -446,25 +525,43 @@ test("warns on stderr and appends a visible notice when a persona response hits 
   t.after(() => {
     console.error = originalConsoleError;
   });
-  lengthTruncated = { "code-reviewer": { text: "## Findings\nPartial review before the cap hit" } };
+  // The model finished valid JSON right as the token budget ran out — rare,
+  // but generateObject can still report finishReason "length" on a call whose
+  // object parsed successfully (see withTruncationNotice in ai-orchestrator.ts).
+  objectLengthTruncated = { "code-reviewer": "parsed" };
 
   const result = await runReviewPipeline(baseInput);
 
-  assert.match(result.codeReview, /^## Findings\nPartial review before the cap hit/);
-  assert.match(result.codeReview, /cut off after reaching the model's output token limit/);
+  assert.match(result.codeReview.markdown, /^code-reviewer-output/);
+  assert.match(result.codeReview.markdown, /cut off after reaching the model's output token limit/);
   assert.ok(
     messages.some((m) => m.includes("code-review") && m.includes("output limit")),
     `expected an output-truncation warning, got: ${JSON.stringify(messages)}`,
   );
 });
 
-test("returns a clear truncation marker instead of a blank section when a persona response hits the cap with no text at all (GH #33)", async () => {
+test("returns a clear truncation marker instead of a blank section when a persona response hits the cap and can't be parsed at all (GH #33)", async (t) => {
   resetState();
-  lengthTruncated = { "code-reviewer": { text: "" } };
+  const messages: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    messages.push(args.map(String).join(" "));
+  };
+  t.after(() => {
+    console.error = originalConsoleError;
+  });
+  // The realistic truncation failure mode: JSON cut off mid-object fails schema
+  // validation outright, surfacing as NoObjectGeneratedError rather than a
+  // successful (if incomplete) parse.
+  objectLengthTruncated = { "code-reviewer": "unparseable" };
 
   const result = await runReviewPipeline(baseInput);
 
-  assert.match(result.codeReview, /Review truncated.*output token budget/);
+  assert.match(result.codeReview.markdown, /Review truncated.*output token budget/);
+  assert.ok(
+    messages.some((m) => m.includes("code-review") && m.includes("output limit") && m.includes("could not")),
+    `expected an output-truncation warning, got: ${JSON.stringify(messages)}`,
+  );
 });
 
 test("does not treat a normal, complete response as truncated", async () => {
@@ -472,8 +569,8 @@ test("does not treat a normal, complete response as truncated", async () => {
 
   const result = await runReviewPipeline(baseInput);
 
-  assert.equal(result.codeReview, "code-reviewer-output");
-  assert.equal(result.securityAudit, "security-auditor-output");
+  assert.equal(result.codeReview.markdown, "code-reviewer-output");
+  assert.equal(result.securityAudit.markdown, "security-auditor-output");
 });
 
 test("warns on stderr but does not corrupt the sandbox test script when test-generation itself hits the output cap (GH #33)", async (t) => {
@@ -590,22 +687,26 @@ test("resolveMaxOutputTokens: base case, linear scaling, zero/negative-safe inpu
   // test itself, so a regression in the constants (BASE_OUTPUT_TOKENS,
   // PER_ADDITIONAL_FILE_OUTPUT_TOKENS, OUTPUT_TOKENS_CEILING) actually fails
   // this test instead of just being self-consistent with a changed formula.
-  // PER_ADDITIONAL_FILE_OUTPUT_TOKENS is now derived (issue #39) as
-  // ceil((16384 - 4096) / (10 - 1)) = 1366, so the ceiling lands right at
+  // BASE_OUTPUT_TOKENS/OUTPUT_TOKENS_CEILING were doubled (8192/32768) for issue
+  // #46's move to generateObject, whose structured/tool-call output measured
+  // meaningfully more expensive than the old free-text budget on a real call
+  // (see the comment on BASE_OUTPUT_TOKENS in ai-orchestrator.ts). With the
+  // same 1:4 ratio preserved, PER_ADDITIONAL_FILE_OUTPUT_TOKENS is now
+  // ceil((32768 - 8192) / (10 - 1)) = 2731, so the ceiling still lands right at
   // MAX_FILES_PER_CHUNK (10) — the largest file count a single chunk ever
-  // actually sees — instead of being reachable only at a pathological 49 files.
-  assert.equal(resolveMaxOutputTokens(0), 4096, "0 files (not reachable today, but shouldn't crash or go negative)");
-  assert.equal(resolveMaxOutputTokens(1), 4096, "single-file review keeps the pre-#33 default");
-  assert.equal(resolveMaxOutputTokens(2), 5462, "one additional file adds exactly one PER_ADDITIONAL_FILE increment");
-  assert.equal(resolveMaxOutputTokens(9), 15024, "just under the max chunk size stays just under the ceiling, unclamped");
+  // actually sees.
+  assert.equal(resolveMaxOutputTokens(0), 8192, "0 files (not reachable today, but shouldn't crash or go negative)");
+  assert.equal(resolveMaxOutputTokens(1), 8192, "single-file review keeps the base budget");
+  assert.equal(resolveMaxOutputTokens(2), 10923, "one additional file adds exactly one PER_ADDITIONAL_FILE increment");
+  assert.equal(resolveMaxOutputTokens(9), 30040, "just under the max chunk size stays just under the ceiling, unclamped");
   assert.equal(
     resolveMaxOutputTokens(10),
-    16384,
-    "a full-size chunk (MAX_FILES_PER_CHUNK) now reaches the full ceiling instead of using only ~39% of it (issue #39)",
+    32768,
+    "a full-size chunk (MAX_FILES_PER_CHUNK) now reaches the full ceiling instead of using only a fraction of it (issue #39)",
   );
-  assert.equal(resolveMaxOutputTokens(17), 16384, "the 17-file batch from issue #33's repro — now chunked, but the raw formula still clamps correctly");
-  assert.equal(resolveMaxOutputTokens(50), 16384, "50 files would exceed the ceiling unclamped — proves Math.min is actually clamping, not coincidentally equal");
-  assert.equal(resolveMaxOutputTokens(500), 16384, "a pathological batch size stays clamped at the ceiling");
+  assert.equal(resolveMaxOutputTokens(17), 32768, "the 17-file batch from issue #33's repro — now chunked, but the raw formula still clamps correctly");
+  assert.equal(resolveMaxOutputTokens(50), 32768, "50 files would exceed the ceiling unclamped — proves Math.min is actually clamping, not coincidentally equal");
+  assert.equal(resolveMaxOutputTokens(500), 32768, "a pathological batch size stays clamped at the ceiling");
 });
 
 test("scales the output token cap with the number of changed files in the --diff batch, instead of a flat constant, and shares it across all three calls", async () => {
@@ -616,32 +717,32 @@ test("scales the output token cap with the number of changed files in the --diff
     changedFiles: Array.from({ length: 5 }, (_, i) => `src/file${i}.ts`),
   });
 
-  // 4096 (base) + 4 additional files * 1366 = 9560 — a batch small enough that
+  // 8192 (base) + 4 additional files * 2731 = 19116 — a batch small enough that
   // the scaled cap isn't clamped by the ceiling, so this actually exercises the
   // scaling formula rather than the clamp (which the ceiling test below covers).
   for (const call of calls) {
-    assert.equal(call.maxOutputTokens, 9560, `${call.kind} call should use the scaled cap`);
+    assert.equal(call.maxOutputTokens, 19116, `${call.kind} call should use the scaled cap`);
   }
 });
 
-test("caps the scaled output token budget at a fixed 16384 ceiling instead of growing without bound for a pathological batch size", async () => {
+test("caps the scaled output token budget at a fixed 32768 ceiling instead of growing without bound for a pathological batch size", async () => {
   resetState();
 
   await runReviewPipeline({ ...baseInput, changedFiles: Array.from({ length: 500 }, (_, i) => `file${i}.ts`) });
 
   assert.ok(calls.length > 0);
   for (const call of calls) {
-    assert.equal(call.maxOutputTokens, 16384);
+    assert.equal(call.maxOutputTokens, 32768);
   }
 });
 
-test("uses the base output token cap (4096) for a single-file review, matching the pre-#33 default", async () => {
+test("uses the base output token cap (8192) for a single-file review", async () => {
   resetState();
 
   await runReviewPipeline(baseInput);
 
   for (const call of calls) {
-    assert.equal(call.maxOutputTokens, 4096);
+    assert.equal(call.maxOutputTokens, 8192);
   }
 });
 
@@ -671,7 +772,7 @@ test("aggregates each chunk's codeReview/securityAudit under its own collapsed <
 
   const chunk1Summary = "<summary>Chunk 1/2 (1 file(s): a.ts)</summary>";
   const chunk2Summary = "<summary>Chunk 2/2 (1 file(s): b.ts)</summary>";
-  for (const text of [result.codeReview, result.securityAudit]) {
+  for (const text of [result.codeReview.markdown, result.securityAudit.markdown]) {
     assert.ok(text.includes(chunk1Summary), `expected "${chunk1Summary}" in: ${text}`);
     assert.ok(text.includes(chunk2Summary), `expected "${chunk2Summary}" in: ${text}`);
     assert.ok(text.indexOf(chunk1Summary) < text.indexOf(chunk2Summary), "chunk 1 should appear before chunk 2");
@@ -694,7 +795,7 @@ test("HTML-escapes a chunk's changed file names in the <summary> line, so an unt
     ],
   });
 
-  for (const text of [result.codeReview, result.securityAudit]) {
+  for (const text of [result.codeReview.markdown, result.securityAudit.markdown]) {
     assert.doesNotMatch(text, /<h1>evil\.ts/, `expected the injected <h1> to be escaped, not raw HTML, in: ${text}`);
     assert.match(text, /x&lt;\/summary&gt;&lt;h1&gt;evil\.ts/);
     // Exactly one real <summary>...</summary> pair should survive — the
@@ -714,9 +815,13 @@ test("neutralizes a literal '</details>' inside a persona's own findings text, s
   // been neutralized (no longer an exact "</details>" substring), even
   // though it still reads as "</details>" to a human once the invisible
   // character is stripped back out.
-  const literalCloses = result.codeReview.match(/<\/details>/g) ?? [];
-  assert.equal(literalCloses.length, chunkedBaseInput.chunks.length, `expected only our own wrapper closes in: ${result.codeReview}`);
-  assert.match(result.codeReview, /this file's own <.?\/details> tag usage/);
+  const literalCloses = result.codeReview.markdown.match(/<\/details>/g) ?? [];
+  assert.equal(
+    literalCloses.length,
+    chunkedBaseInput.chunks.length,
+    `expected only our own wrapper closes in: ${result.codeReview.markdown}`,
+  );
+  assert.match(result.codeReview.markdown, /this file's own <.?\/details> tag usage/);
 });
 
 test("calls sandbox-test generation exactly once against the whole unchunked batch, regardless of chunk count", async () => {
