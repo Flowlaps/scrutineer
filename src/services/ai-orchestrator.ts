@@ -16,7 +16,12 @@ import { getModelId, type ProviderId } from "../utils/model-factory.js";
 import { runInSandbox, type SandboxResult } from "./sandbox.js";
 import { buildDynamicSkillInstructions } from "./skill-router.js";
 import { MAX_FILES_PER_CHUNK } from "./review-chunker.js";
-import { personaReviewSchema, renderPersonaReviewMarkdown, type PersonaReview } from "./review-schema.js";
+import {
+  personaReviewSchema,
+  renderPersonaReviewMarkdown,
+  type PersonaReview,
+  type ReviewFinding,
+} from "./review-schema.js";
 
 // Bounds how much file content and model output a single review can consume, so a
 // huge or generated input file can't blow up token cost or hang on context limits.
@@ -756,6 +761,86 @@ function neutralizeStructuralTags(text: string): string {
   return text.replace(STRUCTURAL_TAG_PATTERN, `<${ZERO_WIDTH_SPACE}$1$2`);
 }
 
+// Groups near-duplicate findings for dedupeFindings below: two findings only
+// ever compare as candidates if they name the same file and the same line
+// (including both being file-level, i.e. `line` undefined on both) — chunks
+// are disjoint file sets in practice, so this also means findings from two
+// different chunks essentially never collide here, except for the genuine
+// cross-cutting case (e.g. both personas' chunks independently flag the same
+// shared file) this function exists to catch.
+function findingDedupeKey(finding: ReviewFinding): string {
+  return `${finding.file.trim()} ${finding.line ?? ""}`;
+}
+
+// `description` is free-form model prose, so two findings describing the same
+// underlying issue are exceedingly unlikely to be byte-identical (different
+// wording, different severity tier's phrasing) — comparing normalized word
+// sets via a Jaccard/Dice-style overlap ratio catches that near-duplication
+// without pulling in a string-similarity dependency for what's a fairly coarse
+// judgment call to begin with.
+function descriptionWordSet(finding: ReviewFinding): Set<string> {
+  const normalized = finding.description.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
+  return new Set(normalized.split(/\s+/).filter((word) => word.length > 0));
+}
+
+// Chosen empirically, not derived from any formula: high enough that two
+// findings about genuinely different problems on the same line (e.g. an
+// unrelated null-check issue and a naming-convention issue both anchored to
+// line 10) don't share enough vocabulary to false-positive as duplicates.
+// Raw word-set overlap is a coarse measure — it catches close near-duplicates
+// (minor rewording, one description being a trimmed or slightly expanded
+// version of the other, both realistic when two chunk calls independently
+// describe the same shared-file issue) but not a full independent paraphrase
+// that reuses little of the same vocabulary; the latter is an accepted miss
+// rather than a false merge, since under-merging just leaves a redundant
+// comment while over-merging would silently drop a real, distinct finding.
+const DEDUPE_SIMILARITY_THRESHOLD = 0.6;
+
+function similarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) {
+    return 1;
+  }
+  let intersection = 0;
+  for (const word of a) {
+    if (b.has(word)) {
+      intersection++;
+    }
+  }
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+// Cross-chunk dedup for mergeChunkedReview below (issue #46 step 5): now that
+// every finding becomes its own visible inline review comment (issue #46 step
+// 4), a near-identical finding surfacing twice — once from each of two chunks
+// that happen to both touch the same shared file — reads as a real defect in
+// the review rather than harmless repetition the way it did when everything
+// funneled into one aggregated comment. Keeps the first occurrence (in the
+// order chunks were merged) and drops any later finding that matches an
+// already-kept one on both file+line (see findingDedupeKey) and description
+// similarity (see similarity/DEDUPE_SIMILARITY_THRESHOLD) — a linear scan
+// rather than a hash map, since a single batch's finding count is small
+// enough (bounded by MAX_FILES_PER_CHUNK-sized chunks) that O(n^2) never
+// matters in practice. Exported so ai-orchestrator.test.ts can exercise it
+// directly against plain ReviewFinding fixtures instead of driving the whole
+// mocked pipeline just to reach this logic.
+export function dedupeFindings(findings: ReviewFinding[]): ReviewFinding[] {
+  const kept: { finding: ReviewFinding; key: string; words: Set<string> }[] = [];
+  const result: ReviewFinding[] = [];
+  for (const finding of findings) {
+    const key = findingDedupeKey(finding);
+    const words = descriptionWordSet(finding);
+    const isDuplicate = kept.some(
+      (candidate) => candidate.key === key && similarity(candidate.words, words) >= DEDUPE_SIMILARITY_THRESHOLD,
+    );
+    if (!isDuplicate) {
+      kept.push({ finding, key, words });
+      result.push(finding);
+    }
+  }
+  return result;
+}
+
 // The chunked counterpart to runReviewPipeline, for --diff batches too large
 // for a single call's output-token ceiling to comfortably cover (issue #35,
 // the acknowledged follow-up to #33/#34's per-call scaling). Deliberately kept
@@ -919,13 +1004,11 @@ export async function runChunkedReviewPipeline(
       .join("\n\n");
   }
 
-  // Merges every chunk's structured findings into one array for the batch —
-  // simple concatenation, not deduplication. Cross-chunk near-duplicate
-  // findings (e.g. two chunks both flagging the same cross-cutting concern)
-  // are a known, accepted gap here, same as issue #46's own writeup: chunks
-  // are disjoint file sets, so exact duplication is unlikely, and real dedup
-  // needs the GitHub Reviews API integration this schema change is laying the
-  // groundwork for, not this PR. `verdict` is intentionally left unset — a
+  // Merges every chunk's structured findings into one array for the batch,
+  // running the merged set through dedupeFindings (issue #46 step 5) so a
+  // near-identical finding that surfaced from two chunks (e.g. both happening
+  // to flag the same cross-cutting concern in a shared file) becomes one
+  // inline review comment, not two. `verdict` is intentionally left unset — a
   // chunked batch has no single verdict; each chunk's own (if any) is still
   // visible inside that chunk's collapsed markdown section above.
   function mergeChunkedReview(sectionOf: (result: ChunkReviewPair) => PersonaReviewOutcome): PersonaReview {
@@ -935,7 +1018,7 @@ export async function runChunkedReviewPipeline(
         .map((r) => r.summary.trim())
         .filter((text) => text.length > 0)
         .join("\n\n"),
-      findings: reviews.flatMap((r) => r.findings),
+      findings: dedupeFindings(reviews.flatMap((r) => r.findings)),
       positiveObservations: reviews.flatMap((r) => r.positiveObservations),
       additionalNotes: reviews.flatMap((r) => r.additionalNotes),
     };
