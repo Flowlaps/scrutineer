@@ -11,10 +11,12 @@ import {
   runReviewPipeline,
   runChunkedReviewPipeline,
   type ReviewChunk,
+  type ReviewResult,
   type ReviewStage,
 } from "./services/ai-orchestrator.js";
 import { buildReportMarkdown } from "./services/report.js";
-import { getRepoSlugFromGit, postPrComment } from "./services/github-client.js";
+import { buildInlineReview } from "./services/inline-review.js";
+import { getRepoSlugFromGit, postPrReview } from "./services/github-client.js";
 import { createModel, getModelId, MODEL_ENV_VAR, PROVIDER_IDS, type ProviderId } from "./utils/model-factory.js";
 import {
   chunkChangedFiles,
@@ -95,7 +97,7 @@ program
     "override the model used for --provider (default: the provider's built-in default; takes precedence over SCRUTINEER_MODEL_*)",
   )
   .option("--output <path>", "write the aggregated report to a Markdown file")
-  .option("--pr <number>", "post the aggregated report as a comment on this PR number")
+  .option("--pr <number>", "post findings as a native GitHub review (inline comments + a summary) on this PR number")
   .option("--repo <owner/repo>", "GitHub repo slug for --pr (defaults to the origin remote)")
   .option(
     "--diff <target>",
@@ -159,6 +161,7 @@ program
       let astContext = "";
       let diff = "";
       let reportMarkdown = "";
+      let reviewResult: ReviewResult | undefined;
       let label: string;
       let changedFiles: string[];
       let reviewChunks: ReviewChunk[] = [];
@@ -289,6 +292,7 @@ program
                     { filePath: label, astContext, diff, provider: options.provider, model, changedFiles },
                     (stage) => message(STAGE_MESSAGES[stage]),
                   );
+            reviewResult = result;
             reportMarkdown = buildReportMarkdown({
               filePath: label,
               provider: options.provider,
@@ -308,7 +312,14 @@ program
       }
 
       if (githubTarget) {
-        const { url } = await postPrComment({ ...githubTarget, body: reportMarkdown });
+        // reviewResult is always set by the task above by the time we reach here —
+        // it only stays undefined if that task threw, which would already have
+        // exited via the catch block below.
+        if (!reviewResult) {
+          throw new Error("scrutineer: internal error — review pipeline produced no result to post");
+        }
+        const { body, comments } = buildInlineReview(reviewResult, diff);
+        const { url } = await postPrReview({ ...githubTarget, body, comments });
         deliveries.push(`posted to ${url}`);
       }
 
