@@ -116,7 +116,7 @@ and allow `isolated-vm` to compile. Without this step, the sandbox will fail to 
 To work on the CLI itself, build from source:
 
 ```bash
-git clone https://github.com/dallaskoncir/scrutineer.git
+git clone https://github.com/Flowlaps/scrutineer.git
 cd scrutineer
 npm install
 npm run build
