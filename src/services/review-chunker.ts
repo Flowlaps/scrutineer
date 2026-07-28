@@ -32,23 +32,13 @@ export function chunkChangedFiles(files: string[], maxFilesPerChunk: number = MA
   return chunks;
 }
 
-// A much stricter ceiling than MAX_TOTAL_FILES, enforced only for --pr runs
-// (issue #55): the resolved-thread suppression memory is only as useful as
-// the review discipline behind it — a PR sprawling across dozens of files
-// defeats the "≤3 rounds to mergeable" goal regardless of memory. Deliberately
-// separate from the chunking ceilings above, which stay unchanged for --diff
-// runs without --pr.
+// Stricter than MAX_TOTAL_FILES, and only enforced for --pr runs.
 export const MAX_FILES_FOR_PR_REVIEW = 10;
 
 export function exceedsMaxFilesForPrReview(files: string[], maxFiles: number = MAX_FILES_FOR_PR_REVIEW): boolean {
   return files.length > maxFiles;
 }
 
-// Resolves a relative import specifier (e.g. "./Foo", "../lib/utils") from
-// `fromFile`'s own directory against the set of files actually in this batch,
-// trying the same extension/index-file conventions Node/TypeScript resolution
-// does. Returns undefined for a bare/package specifier (doesn't start with
-// ".") or one that doesn't resolve to another file in the batch.
 function resolveRelativeImport(fromFile: string, specifier: string, filesInBatch: Set<string>): string | undefined {
   if (!specifier.startsWith(".")) {
     return undefined;
@@ -68,13 +58,9 @@ function resolveRelativeImport(fromFile: string, specifier: string, filesInBatch
   return candidates.find((candidate) => filesInBatch.has(candidate));
 }
 
-// Groups files that import one another (directly, via a relative specifier
-// resolving to another changed file) into the same group, via union-find —
-// so a component and the page that renders it, for instance, land together
-// rather than being split across chunks by chance of list position (issue
-// #55's "widen the chunk" direction). A file with no in-batch relative import
-// links is simply its own singleton group, so a batch with no detected
-// dependencies groups identically to the plain per-file order below.
+// Groups files that import one another via a relative specifier into the
+// same group (union-find), so e.g. a component and the page rendering it land
+// together instead of splitting across chunks by list position.
 export function groupFilesByDependency(
   files: string[],
   importsOf: (file: string) => string[],
@@ -121,15 +107,10 @@ export function groupFilesByDependency(
   return Array.from(groups.values());
 }
 
-// Dependency-aware counterpart to chunkChangedFiles: packs each dependency
-// group (see groupFilesByDependency) into a chunk without splitting it across
-// two, so a known inter-file dependency stays visible to the same review call
-// (issue #55). A group larger than maxFilesPerChunk on its own still lands in
-// one (oversized) chunk — keeping a genuine dependency together takes
-// priority over exact chunk sizing, which was always a soft target (see
-// MAX_FILES_PER_CHUNK's own comment) rather than a hard cap. When no
-// dependency links exist, every group is a singleton in original order, so
-// packing produces byte-identical chunks to chunkChangedFiles().
+// Dependency-aware counterpart to chunkChangedFiles: packs each group from
+// groupFilesByDependency into a chunk without splitting it across two. A
+// group larger than maxFilesPerChunk still lands in one oversized chunk —
+// keeping a dependency together takes priority over exact chunk sizing.
 export function chunkChangedFilesWithDependencies(
   files: string[],
   importsOf: (file: string) => string[],

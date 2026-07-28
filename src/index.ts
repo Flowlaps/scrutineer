@@ -201,11 +201,9 @@ program
         // overflow — see review-chunker.ts. A batch that fits in one chunk
         // (the common case) leaves fileChunks.length === 1 and the pipeline
         // below runs exactly as it did before this feature existed. This
-        // naive, file-list-only split only decides how many chunks to expect
-        // up front (for the log message and the task list below) — the
-        // "Prepare chunks" task further down refines the actual file
-        // groupings using each file's own imports, once those are known
-        // (issue #55's chunk-widening).
+        // naive count only decides how many chunks to expect up front; the
+        // "Prepare chunks" task below regroups with import awareness once
+        // each file's AST is parsed.
         const fileChunks = chunkChangedFiles(files);
         if (fileChunks.length > 1) {
           clack.log.info(
@@ -245,13 +243,6 @@ program
                 {
                   title: `Prepare ${fileChunks.length} review chunk(s)`,
                   task: () => {
-                    // Regrouped with import awareness now that every file's AST
-                    // has been parsed above — a known inter-file dependency
-                    // (e.g. a component and the page that renders it) lands in
-                    // the same chunk instead of being split by chance of list
-                    // position (issue #55). Usually produces the same grouping
-                    // as the naive split logged above; only actually reshuffles
-                    // when a real cross-chunk import link is found.
                     const dependencyAwareChunks = chunkChangedFilesWithDependencies(
                       files,
                       (f) => importsByFile.get(f) ?? [],
@@ -299,10 +290,6 @@ program
         return;
       }
 
-      // Cross-run memory (issue #55): a prior --pr run's already-addressed
-      // findings shouldn't be re-raised from scratch on every invocation.
-      // Only fetched in --pr mode, since resolved review threads only exist
-      // once findings have actually been posted to a real PR.
       let resolvedFindings: ResolvedThreadSummary[] | undefined;
       if (githubTarget) {
         await clack.tasks([

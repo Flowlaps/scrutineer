@@ -20,14 +20,6 @@ export function codeFence(code: string): string {
   return "`".repeat(Math.max(3, longestRun + 1));
 }
 
-// The generated test can't import the file under review (see
-// TEST_GENERATOR_SYSTEM_PROMPT in ai-orchestrator.ts), so a FAILED result is
-// ambiguous: it could mean the reviewed code has a bug, or that the model's
-// own reimplementation of it is wrong instead (a stale assumption, a
-// mismatched fixture) — issue #55. The prompt asks the model to log a
-// CONFIDENCE line saying which one it believes and why; this pulls that back
-// out of the sandbox's captured logs so the report can render it as its own
-// line instead of leaving it buried in the collapsed <details> log dump.
 const CONFIDENCE_LOG_PATTERN = /^CONFIDENCE:\s*(.+)$/im;
 
 function findConfidenceNote(logs: string[]): string | undefined {
@@ -81,11 +73,7 @@ export function buildSandboxSection(sandboxTest: ReviewResult["sandboxTest"]): s
   return sections;
 }
 
-// Before this (issue #55), a truncated AST-context/diff section only ever
-// surfaced as a stderr warning (ai-orchestrator.ts's truncate()) — visible in
-// the Action's raw log, but not to whoever actually reads the posted review
-// or report. Exported so inline-review.ts can render the same banner at the
-// top of a posted GitHub review's cover note, not just here.
+// Exported so inline-review.ts can render the same banner in its cover note.
 export function buildTruncationNotice(truncations: TruncationNotice[]): string[] {
   if (truncations.length === 0) {
     return [];

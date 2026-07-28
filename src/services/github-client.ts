@@ -142,10 +142,8 @@ export async function postPrReview(options: PostPrReviewOptions): Promise<PostPr
   return { url: json.html_url };
 }
 
-// A prior finding's home on a resolved thread: the file/line it was anchored
-// to (both nullable — a thread can be file-level, or the line it anchored to
-// can have since been deleted from the diff) plus its first comment's body,
-// used as the finding's identity for suppression (issue #55).
+// `line` is nullable: a thread can be file-level, or its original line may
+// have since been removed from the diff.
 export interface ResolvedThreadSummary {
   path: string;
   line: number | null;
@@ -193,13 +191,8 @@ interface ReviewThreadsResponse {
   errors?: { message: string }[];
 }
 
-/**
- * Fetches every *resolved* review thread on a PR via the GraphQL API — the
- * REST Reviews API has no `isResolved` field, only the GraphQL
- * `PullRequestReviewThread` type does (issue #55). Used to suppress
- * re-raising a finding that was already addressed and resolved on a prior
- * `scrutineer review --pr` run against the same PR.
- */
+// The REST Reviews API has no `isResolved` field — only GraphQL's
+// PullRequestReviewThread type does.
 export async function getResolvedThreads(
   owner: string,
   repo: string,

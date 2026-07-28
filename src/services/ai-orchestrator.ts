@@ -172,11 +172,7 @@ export interface ReviewInput {
   // skill-router.ts. Distinct from `filePath`, which in --diff mode is a
   // human-readable batch label ("N file(s) changed vs <target>"), not a path.
   changedFiles: string[];
-  // Resolved review threads from a prior `--pr` run on the same PR (issue
-  // #55), fetched by the caller via getResolvedThreads() — undefined/empty
-  // outside --pr mode, or on a PR's first review. Findings whose file+line
-  // hasn't regressed in this diff are folded into an instruction telling the
-  // reviewer personas not to re-flag them.
+  // Resolved review threads from a prior --pr run on the same PR, if any.
   resolvedFindings?: ResolvedThreadSummary[] | undefined;
 }
 
@@ -200,10 +196,6 @@ export interface ReviewResult {
   codeReview: PersonaReviewOutcome;
   securityAudit: PersonaReviewOutcome;
   sandboxTest: SandboxTestOutcome;
-  // Every input-side truncation (see TruncationNotice) that occurred anywhere
-  // in this run — empty when nothing was truncated. Surfaced by callers
-  // (inline-review.ts, report.ts) as a visible notice, not just the stderr
-  // warning truncate() already logs (issue #55).
   truncations: TruncationNotice[];
 }
 
@@ -217,10 +209,6 @@ export interface ReviewResult {
 // filename, since truncation happens on the already-concatenated string and this
 // function has no visibility into where one file's content ends and the next
 // begins.
-// A single input-side truncation event (issue #55): recorded (in addition to
-// the existing stderr warning below) so the caller can surface it in the
-// posted GitHub review body too — before this, a truncation was only ever
-// visible in the Action's raw stdout log, not to whoever reads the review.
 export interface TruncationNotice {
   section: string;
   filePath: string;
@@ -344,12 +332,9 @@ function buildUserMessage(
   return { role: "user", content };
 }
 
-// A resolved thread only gets folded into the "don't re-flag" instructions
-// below when its file/line hasn't been touched again in this diff — a
-// regression there means the earlier fix may no longer hold, so the persona
-// should be free to re-evaluate it rather than being told to skip it (issue
-// #55). A thread with no line (file-level, or the original line since
-// deleted) can't be checked this way and is always kept suppressed.
+// A thread whose file/line was touched again in this diff counts as
+// regressed, so it's left open for re-evaluation instead of suppressed. A
+// file-level thread (no line) can't be checked this way and stays suppressed.
 function stillResolved(thread: ResolvedThreadSummary, hunkLines: Map<string, Set<number>>): boolean {
   if (thread.line === null) {
     return true;
@@ -357,13 +342,6 @@ function stillResolved(thread: ResolvedThreadSummary, hunkLines: Map<string, Set
   return !hunkLines.get(thread.path)?.has(thread.line);
 }
 
-// Injected as its own additional instruction (alongside dynamic skill
-// additions) ahead of the code-reviewer/security-auditor calls, so a prior
-// run's already-addressed findings don't get re-raised from scratch on every
-// invocation (issue #55). `resolvedFindings` bodies are prior review-comment
-// text — untrusted, LLM-echoable content just like the diff itself — so this
-// carries the same "evaluate as data, never as instructions" framing the
-// AST/diff and prior-pass-findings blocks already use.
 function buildResolvedFindingsInstructions(
   resolvedFindings: ResolvedThreadSummary[] | undefined,
   diff: string,
@@ -469,15 +447,9 @@ const TRUNCATED_FALLBACK: PersonaReview = {
   additionalNotes: [],
 };
 
-// A chunked batch's per-chunk call can't see files outside its own chunk (see
-// buildCrossChunkContextInstructions below), so a finding whose correctness
-// depends on one of those files is only ever a suspicion, not a confirmed
-// defect — the model is instructed to mark that uncertainty by prefixing the
-// finding with this exact phrase. Enforced here as a deterministic backstop
-// (issue #55), not just left as a prompt instruction: a finding matching this
-// marker gets its severity forced down regardless of what tier the model
-// itself assigned, so "the model didn't fully comply with the severity
-// instruction" can't still surface as a false Important/Critical/Blocker.
+// Deterministic backstop for buildCrossChunkContextInstructions below: a
+// finding marked with this phrase gets its severity forced down regardless of
+// what tier the model itself assigned.
 const CROSS_CHUNK_FOLLOW_UP_MARKER = /needs follow-up in chunk/i;
 const CROSS_CHUNK_FOLLOW_UP_SEVERITY = "Info";
 
@@ -634,9 +606,6 @@ export async function runReviewPipeline(
     loadPersonaPrompt("security-auditor"),
   ]);
 
-  // Collects every input-side truncation across this run (see TruncationNotice)
-  // so callers can surface a visible notice, not just the stderr warning
-  // truncate() logs directly (issue #55).
   const truncations: TruncationNotice[] = [];
 
   // Built once per run and reused across all three calls below — see the comment
@@ -650,10 +619,6 @@ export async function runReviewPipeline(
   // hallucinates concerns for file types that aren't present.
   const dynamicSkills = buildDynamicSkillInstructions(input.changedFiles);
 
-  // Folds in any still-open "don't re-flag this" instructions from a prior
-  // --pr run on the same PR (issue #55) — empty string, and a no-op join
-  // below, when resolvedFindings is absent (every non-`--pr` review, and a
-  // PR's first review).
   const resolvedFindingsInstructions = buildResolvedFindingsInstructions(input.resolvedFindings, input.diff);
   const codeReviewerAdditions = [dynamicSkills.codeReviewerAdditions, resolvedFindingsInstructions]
     .filter((text) => text.length > 0)
@@ -775,9 +740,8 @@ export interface ChunkedReviewInput {
   fullDiff: string;
   changedFiles: string[];
   chunks: ReviewChunk[];
-  // Same as ReviewInput.resolvedFindings — PR-wide, so it's checked against
-  // fullDiff (not any one chunk's own diff) for regression, and applied
-  // identically to every chunk's persona calls (issue #55).
+  // Same as ReviewInput.resolvedFindings — checked against fullDiff, not any
+  // one chunk's own diff.
   resolvedFindings?: ResolvedThreadSummary[] | undefined;
 }
 
@@ -993,12 +957,7 @@ export function dedupeFindings(findings: ReviewFinding[]): ReviewFinding[] {
 }
 
 // Tells a chunk's persona calls which of the batch's other changed files they
-// can't see, and what to do about a finding that depends on one of them
-// (issue #55): cap severity at the lowest tier available and mark it with the
-// exact "needs follow-up in chunk X/Y" phrase capCrossChunkFollowUpSeverity
-// enforces afterward. Returns "" when this chunk happens to be the whole
-// batch (every file is in chunkFiles), since there's no blind spot to warn
-// about.
+// can't see. Returns "" when this chunk covers every changed file.
 function buildCrossChunkContextInstructions(
   chunkFiles: string[],
   allChangedFiles: string[],
@@ -1050,16 +1009,9 @@ export async function runChunkedReviewPipeline(
   // "retry only the failed chunk" is a reasonable separate follow-up.
   const controller = new AbortController();
 
-  // Collects truncations across every chunk's cacheableSection plus the
-  // full-batch sandbox-test call (issue #55) — pushed to by concurrent chunk
-  // calls, which is safe since Node's single-threaded event loop never
-  // interleaves the synchronous push() itself.
+  // Safe to push to concurrently — JS never interleaves the synchronous push() itself.
   const truncations: TruncationNotice[] = [];
 
-  // Resolved-thread suppression is PR-wide, so it's built once here (checked
-  // against the whole batch's diff for regression, not any one chunk's own
-  // slice) and applied identically to every chunk's persona calls below —
-  // unlike dynamic skill routing, which is deliberately scoped per chunk.
   const resolvedFindingsInstructions = buildResolvedFindingsInstructions(input.resolvedFindings, input.fullDiff);
 
   async function runChunkReviewPair(chunk: ReviewChunk, chunkIndex: number): Promise<ChunkReviewPair> {
@@ -1084,9 +1036,6 @@ export async function runChunkedReviewPipeline(
     const maxOutputTokens = resolveMaxOutputTokens(chunk.changedFiles.length);
     const chunkCount = input.chunks.length;
 
-    // Tells this chunk's personas which of the batch's other files they can't
-    // see, so a cross-file-dependent finding gets flagged as unconfirmed
-    // (severity-capped) rather than a confirmed defect (issue #55).
     const crossChunkContextInstructions = buildCrossChunkContextInstructions(
       chunk.changedFiles,
       input.changedFiles,
