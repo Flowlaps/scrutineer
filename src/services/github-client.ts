@@ -191,6 +191,12 @@ interface ReviewThreadsResponse {
   errors?: { message: string }[];
 }
 
+const GRAPHQL_REQUEST_TIMEOUT_MS = 30_000;
+// 100 threads/page (RESOLVED_THREADS_QUERY's `first: 100`) — 50 pages is far
+// beyond any real PR's thread count, but bounds a misbehaving response that
+// always reports hasNextPage: true from looping forever.
+export const MAX_RESOLVED_THREAD_PAGES = 50;
+
 // The REST Reviews API has no `isResolved` field — only GraphQL's
 // PullRequestReviewThread type does.
 export async function getResolvedThreads(
@@ -201,8 +207,16 @@ export async function getResolvedThreads(
 ): Promise<ResolvedThreadSummary[]> {
   const results: ResolvedThreadSummary[] = [];
   let after: string | null = null;
+  let pageCount = 0;
 
   do {
+    pageCount++;
+    if (pageCount > MAX_RESOLVED_THREAD_PAGES) {
+      throw new Error(
+        `Failed to fetch resolved review threads: exceeded ${MAX_RESOLVED_THREAD_PAGES} pages without reaching the end`,
+      );
+    }
+
     const response = await fetch("https://api.github.com/graphql", {
       method: "POST",
       headers: {
@@ -211,6 +225,7 @@ export async function getResolvedThreads(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ query: RESOLVED_THREADS_QUERY, variables: { owner, repo, pr, after } }),
+      signal: AbortSignal.timeout(GRAPHQL_REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {

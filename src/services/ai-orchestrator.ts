@@ -350,11 +350,11 @@ function buildResolvedFindingsInstructions(
     return "";
   }
   const hunkLines = parseDiffHunks(diff);
-  const stillOpen = resolvedFindings.filter((thread) => stillResolved(thread, hunkLines));
-  if (stillOpen.length === 0) {
+  const stillSuppressed = resolvedFindings.filter((thread) => stillResolved(thread, hunkLines));
+  if (stillSuppressed.length === 0) {
     return "";
   }
-  const list = stillOpen
+  const list = stillSuppressed
     .map((thread) => `- [${singleLine(thread.path)}${thread.line !== null ? `:${thread.line}` : ""}] ${singleLine(thread.body)}`)
     .join("\n");
   return (

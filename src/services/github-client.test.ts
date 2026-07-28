@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { getResolvedThreads, parseGitHubRemote, postPrComment, postPrReview } from "./github-client.js";
+import {
+  getResolvedThreads,
+  MAX_RESOLVED_THREAD_PAGES,
+  parseGitHubRemote,
+  postPrComment,
+  postPrReview,
+} from "./github-client.js";
 
 test("parses an SSH remote URL", () => {
   assert.deepEqual(parseGitHubRemote("git@github.com:dallaskoncir/scrutineer.git"), {
@@ -244,8 +250,31 @@ test("getResolvedThreads posts a GraphQL query and returns only resolved threads
   const sentBody = JSON.parse(capturedInit?.body as string);
   assert.match(sentBody.query, /reviewThreads/);
   assert.deepEqual(sentBody.variables, { owner: "o", repo: "r", pr: 1, after: null });
+  assert.ok(capturedInit?.signal instanceof AbortSignal, "expected the request to be bounded by a timeout signal");
 
   assert.deepEqual(result, [{ path: "src/foo.ts", line: 12, body: "fix this" }]);
+});
+
+test("getResolvedThreads gives up after MAX_RESOLVED_THREAD_PAGES instead of looping forever on a misbehaving response", async (t) => {
+  const originalFetch = global.fetch;
+  let fetchCount = 0;
+
+  global.fetch = (async () => {
+    fetchCount++;
+    return {
+      ok: true,
+      status: 200,
+      json: async () =>
+        // Always reports another page, with no resolved threads to make progress on.
+        reviewThreadsPage([], true, "same-cursor"),
+    } as Response;
+  }) as typeof fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  await assert.rejects(getResolvedThreads("o", "r", 1, "tok"), /exceeded \d+ pages/);
+  assert.equal(fetchCount, MAX_RESOLVED_THREAD_PAGES);
 });
 
 test("getResolvedThreads paginates across multiple pages until hasNextPage is false", async (t) => {

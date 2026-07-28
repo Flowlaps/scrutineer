@@ -73,6 +73,12 @@ test("exceedsMaxFilesForPrReview is false at and under the limit, true just over
   assert.equal(exceedsMaxFilesForPrReview(Array.from({ length: 11 }, (_, i) => `f${i}.ts`), 10), true);
 });
 
+test("MAX_FILES_FOR_PR_REVIEW never exceeds MAX_FILES_PER_CHUNK, so a --pr batch can never chunk (deliberate — see the constant's own comment)", () => {
+  assert.ok(MAX_FILES_FOR_PR_REVIEW <= MAX_FILES_PER_CHUNK);
+  // The largest batch --pr allows produces exactly one chunk.
+  assert.deepEqual(chunkChangedFiles(Array.from({ length: MAX_FILES_FOR_PR_REVIEW }, (_, i) => `f${i}.ts`)).length, 1);
+});
+
 test("exceedsMaxFilesForPrReview uses MAX_FILES_FOR_PR_REVIEW as its default", () => {
   assert.equal(exceedsMaxFilesForPrReview(Array.from({ length: MAX_FILES_FOR_PR_REVIEW }, (_, i) => `f${i}.ts`)), false);
   assert.equal(exceedsMaxFilesForPrReview(Array.from({ length: MAX_FILES_FOR_PR_REVIEW + 1 }, (_, i) => `f${i}.ts`)), true);

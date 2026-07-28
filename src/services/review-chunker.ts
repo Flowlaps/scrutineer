@@ -32,7 +32,11 @@ export function chunkChangedFiles(files: string[], maxFilesPerChunk: number = MA
   return chunks;
 }
 
-// Stricter than MAX_TOTAL_FILES, and only enforced for --pr runs.
+// Stricter than MAX_TOTAL_FILES, and only enforced for --pr runs. Deliberately
+// <= MAX_FILES_PER_CHUNK: a --pr batch this small never reaches
+// chunkChangedFiles's multi-chunk branch, so cross-chunk severity capping
+// only fires for a --diff run without --pr — the file cap is what keeps a
+// --pr review from ever having the cross-chunk blind spot in the first place.
 export const MAX_FILES_FOR_PR_REVIEW = 10;
 
 export function exceedsMaxFilesForPrReview(files: string[], maxFiles: number = MAX_FILES_FOR_PR_REVIEW): boolean {

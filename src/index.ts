@@ -191,6 +191,14 @@ program
           process.exitCode = 1;
           return;
         }
+        if (githubTarget && exceedsMaxFilesForPrReview(files)) {
+          console.error(
+            `scrutineer: this PR touches ${files.length} files. Split into smaller PRs for reliable ` +
+              `review results (limit: ${MAX_FILES_FOR_PR_REVIEW} files).`,
+          );
+          process.exitCode = 1;
+          return;
+        }
 
         label = `${files.length} file(s) changed vs ${options.diff}`;
         changedFiles = files;
@@ -279,15 +287,6 @@ program
             },
           },
         ]);
-      }
-
-      if (githubTarget && exceedsMaxFilesForPrReview(changedFiles)) {
-        console.error(
-          `scrutineer: this PR touches ${changedFiles.length} files. Split into smaller PRs for reliable ` +
-            `review results (limit: ${MAX_FILES_FOR_PR_REVIEW} files).`,
-        );
-        process.exitCode = 1;
-        return;
       }
 
       let resolvedFindings: ResolvedThreadSummary[] | undefined;

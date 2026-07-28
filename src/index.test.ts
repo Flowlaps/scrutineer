@@ -246,3 +246,42 @@ test("scrutineer review --diff refuses a batch over the total-file limit instead
   // upfront rejection, not a failed-partway-through run.
   assert.doesNotMatch(combinedOutput, /Batch split into/);
 });
+
+test("scrutineer review --diff --pr refuses a batch over the 10-file PR-review limit before any AST/diff work (issue #55)", (t) => {
+  const dir = setupManyChangedFilesRepo(t, 15); // over MAX_FILES_FOR_PR_REVIEW (10)
+  const scriptPath = path.join(repoRoot, "src/index.ts");
+
+  let status: number | null;
+  let combinedOutput: string;
+  try {
+    const stdout = execFileSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "review", "--diff", "main", "--pr", "1", "--repo", "o/r", "--provider", "ollama"],
+      {
+        cwd: repoRoot,
+        encoding: "utf-8",
+        env: {
+          ...process.env,
+          GIT_DIR: join(dir, ".git"),
+          GIT_WORK_TREE: dir,
+          GITHUB_TOKEN: "fake-token",
+          OLLAMA_HOST: "http://127.0.0.1:1",
+        },
+        timeout: 30_000,
+        killSignal: "SIGKILL",
+      },
+    );
+    status = 0;
+    combinedOutput = stdout;
+  } catch (error) {
+    const e = error as { status: number | null; stdout: string; stderr: string };
+    status = e.status;
+    combinedOutput = e.stdout + e.stderr;
+  }
+
+  assert.equal(status, 1);
+  assert.match(combinedOutput, /this PR touches 15 files/);
+  // Refused before AST parsing/chunk prep ever runs — no real GitHub token or
+  // network access is needed to reach this point.
+  assert.doesNotMatch(combinedOutput, /Batch split into/);
+});
