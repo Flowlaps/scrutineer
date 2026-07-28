@@ -7,11 +7,11 @@ function fakeResult(overrides: Partial<ReviewResult> = {}): ReviewResult {
   return {
     codeReview: {
       markdown: "## Review Summary\n\nLooks fine.",
-      review: { summary: "Looks fine.", findings: [], positiveObservations: [], additionalNotes: [] },
+      review: { verdict: null, summary: "Looks fine.", findings: [], positiveObservations: [], additionalNotes: [] },
     },
     securityAudit: {
       markdown: "## Security Audit Report\n\nNo findings.",
-      review: { summary: "No findings.", findings: [], positiveObservations: [], additionalNotes: [] },
+      review: { verdict: null, summary: "No findings.", findings: [], positiveObservations: [], additionalNotes: [] },
     },
     sandboxTest: {
       code: 'console.log("PASS");',

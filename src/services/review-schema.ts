@@ -6,12 +6,20 @@ import { z } from "zod";
 // Critical/High/Medium/Low/Info) and slightly different per-finding fields
 // (security-auditor's template has a title, an impact, and a proof-of-concept;
 // code-reviewer's doesn't). Rather than modeling two divergent schemas, `severity`
-// stays a free-form string in each persona's own vocabulary, `title` is optional,
+// stays a free-form string in each persona's own vocabulary, `title` is nullable,
 // and `description` absorbs whatever narrative fields a persona's template would
 // otherwise have split out (impact, proof of concept, recommendation) — lossy
 // relative to the richer security-auditor template, but line/file is the field
 // that actually matters for issue #46's end goal (anchoring a GitHub inline
 // review comment), not preserving every template subsection as its own schema key.
+//
+// `line`, `title`, and `verdict` below are `.nullable()` rather than `.optional()`:
+// OpenAI's structured-outputs strict mode requires every property to appear in
+// the object's `required` array, which the Vercel AI SDK's schema conversion
+// only does for non-optional properties — an `.optional()` field gets dropped
+// from `required` and OpenAI rejects the whole schema (issue #57). Anthropic and
+// Gemini tolerate plain-optional fields, so this only ever surfaced there.
+// `.nullable()` keeps the key required while still modeling "no value" as `null`.
 export const reviewFindingSchema = z.object({
   file: z
     .string()
@@ -21,8 +29,8 @@ export const reviewFindingSchema = z.object({
     .number()
     .int()
     .positive()
-    .optional()
-    .describe("Line number in `file` this finding anchors to. Omit if the finding isn't tied to one specific line."),
+    .nullable()
+    .describe("Line number in `file` this finding anchors to. `null` if the finding isn't tied to one specific line."),
   severity: z
     .string()
     .min(1)
@@ -31,8 +39,8 @@ export const reviewFindingSchema = z.object({
     ),
   title: z
     .string()
-    .optional()
-    .describe('Short finding title, for personas whose template includes one (e.g. security-auditor\'s "[Finding title]").'),
+    .nullable()
+    .describe('Short finding title, for personas whose template includes one (e.g. security-auditor\'s "[Finding title]"). `null` if none.'),
   description: z
     .string()
     .min(1)
@@ -44,8 +52,8 @@ export type ReviewFinding = z.infer<typeof reviewFindingSchema>;
 export const personaReviewSchema = z.object({
   verdict: z
     .string()
-    .optional()
-    .describe('Overall verdict, if this persona\'s template has one (e.g. code-reviewer\'s "APPROVE" / "REQUEST CHANGES").'),
+    .nullable()
+    .describe('Overall verdict, if this persona\'s template has one (e.g. code-reviewer\'s "APPROVE" / "REQUEST CHANGES"). `null` if none.'),
   summary: z
     .string()
     .describe(
@@ -66,7 +74,7 @@ export type PersonaReview = z.infer<typeof personaReviewSchema>;
 
 function findingLocation(finding: ReviewFinding): string {
   const file = singleLine(finding.file);
-  return finding.line !== undefined ? `${file}:${finding.line}` : file;
+  return finding.line != null ? `${file}:${finding.line}` : file;
 }
 
 // `severity`, `title`, and `file` are meant to be short, single-line labels
