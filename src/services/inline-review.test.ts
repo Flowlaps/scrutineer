@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildInlineReview } from "./inline-review.js";
-import type { ReviewResult } from "./ai-orchestrator.js";
+import type { ReviewResult, TruncationNotice } from "./ai-orchestrator.js";
 import type { PersonaReview } from "./review-schema.js";
 
 const DIFF = [
@@ -24,11 +24,13 @@ function personaReview(overrides: Partial<PersonaReview> = {}): PersonaReview {
 function fakeResult(overrides: {
   codeReview?: Partial<PersonaReview>;
   securityAudit?: Partial<PersonaReview>;
+  truncations?: TruncationNotice[];
 } = {}): ReviewResult {
   return {
     codeReview: { markdown: "", review: personaReview(overrides.codeReview) },
     securityAudit: { markdown: "", review: personaReview(overrides.securityAudit) },
     sandboxTest: { code: 'console.log("PASS");', result: { ok: true, logs: ["PASS"], errors: [] } },
+    truncations: overrides.truncations ?? [],
   };
 }
 
@@ -106,6 +108,21 @@ test("cover note reports no findings for a persona with an empty findings array"
   assert.match(body, /\*\*Code Review:\*\* no findings/);
   assert.match(body, /\*\*Security Audit:\*\* no findings/);
   assert.doesNotMatch(body, /### Additional Findings/);
+});
+
+test("cover note surfaces a truncation banner near the top when the review was truncated", () => {
+  const result = fakeResult({ truncations: [{ section: "AST context", filePath: "src/foo.ts", omittedChars: 500 }] });
+
+  const { body } = buildInlineReview(result, DIFF);
+
+  assert.match(body, /This review was truncated/);
+  assert.match(body, /500 character/);
+  assert.ok(body.indexOf("truncated") < body.indexOf("## Summary"), "expected the banner before the Summary section");
+});
+
+test("cover note omits the truncation banner when nothing was truncated", () => {
+  const { body } = buildInlineReview(fakeResult(), DIFF);
+  assert.doesNotMatch(body, /truncated/i);
 });
 
 test("neutralizes a block-start marker on the first line of an inline comment's description (PR #51 review)", () => {

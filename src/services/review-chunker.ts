@@ -31,3 +31,107 @@ export function chunkChangedFiles(files: string[], maxFilesPerChunk: number = MA
   }
   return chunks;
 }
+
+// Stricter than MAX_TOTAL_FILES, and only enforced for --pr runs. Deliberately
+// <= MAX_FILES_PER_CHUNK: a --pr batch this small never reaches
+// chunkChangedFiles's multi-chunk branch, so cross-chunk severity capping
+// only fires for a --diff run without --pr — the file cap is what keeps a
+// --pr review from ever having the cross-chunk blind spot in the first place.
+export const MAX_FILES_FOR_PR_REVIEW = 10;
+
+export function exceedsMaxFilesForPrReview(files: string[], maxFiles: number = MAX_FILES_FOR_PR_REVIEW): boolean {
+  return files.length > maxFiles;
+}
+
+function resolveRelativeImport(fromFile: string, specifier: string, filesInBatch: Set<string>): string | undefined {
+  if (!specifier.startsWith(".")) {
+    return undefined;
+  }
+  const dir = fromFile.includes("/") ? fromFile.slice(0, fromFile.lastIndexOf("/")) : "";
+  const segments = `${dir}/${specifier}`.split("/").filter((segment) => segment.length > 0 && segment !== ".");
+  const resolvedSegments: string[] = [];
+  for (const segment of segments) {
+    if (segment === "..") {
+      resolvedSegments.pop();
+    } else {
+      resolvedSegments.push(segment);
+    }
+  }
+  const base = resolvedSegments.join("/");
+  const candidates = [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`];
+  return candidates.find((candidate) => filesInBatch.has(candidate));
+}
+
+// Groups files that import one another via a relative specifier into the
+// same group (union-find), so e.g. a component and the page rendering it land
+// together instead of splitting across chunks by list position.
+export function groupFilesByDependency(
+  files: string[],
+  importsOf: (file: string) => string[],
+): string[][] {
+  const filesInBatch = new Set(files);
+  const parent = new Map<string, string>(files.map((f) => [f, f]));
+
+  function find(file: string): string {
+    let root = file;
+    while (parent.get(root) !== root) {
+      root = parent.get(root) as string;
+    }
+    parent.set(file, root);
+    return root;
+  }
+
+  function union(a: string, b: string): void {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) {
+      parent.set(rootA, rootB);
+    }
+  }
+
+  for (const file of files) {
+    for (const specifier of importsOf(file)) {
+      const resolved = resolveRelativeImport(file, specifier, filesInBatch);
+      if (resolved) {
+        union(file, resolved);
+      }
+    }
+  }
+
+  const groups = new Map<string, string[]>();
+  for (const file of files) {
+    const root = find(file);
+    const group = groups.get(root);
+    if (group) {
+      group.push(file);
+    } else {
+      groups.set(root, [file]);
+    }
+  }
+  return Array.from(groups.values());
+}
+
+// Dependency-aware counterpart to chunkChangedFiles: packs each group from
+// groupFilesByDependency into a chunk without splitting it across two. A
+// group larger than maxFilesPerChunk still lands in one oversized chunk —
+// keeping a dependency together takes priority over exact chunk sizing.
+export function chunkChangedFilesWithDependencies(
+  files: string[],
+  importsOf: (file: string) => string[],
+  maxFilesPerChunk: number = MAX_FILES_PER_CHUNK,
+): string[][] {
+  const groups = groupFilesByDependency(files, importsOf);
+  const chunks: string[][] = [];
+  let current: string[] = [];
+  for (const group of groups) {
+    if (current.length > 0 && current.length + group.length > maxFilesPerChunk) {
+      chunks.push(current);
+      current = [];
+    }
+    current.push(...group);
+  }
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+  return chunks;
+}

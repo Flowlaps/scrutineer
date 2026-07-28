@@ -64,6 +64,8 @@ scrutineer review --diff origin/main
 
 This resolves `git diff --name-only origin/main...HEAD` internally, filters it to `.ts`/`.tsx` files, and sends all of them to the review swarm as a single batch call so findings can reference across files. `--diff` and a file argument are mutually exclusive — pass one or the other.
 
+Any `--pr` run automatically fetches the PR's already-resolved review threads and won't re-flag a finding you've already addressed (unless the same file/line changed again). When `--pr` is combined with `--diff`, it also refuses a batch touching more than 10 files — split a larger PR into smaller ones for reliable review results.
+
 ## Configuration
 
 Scrutineer reads all credentials and overrides from environment variables in whatever shell or CI job it's running in. There's no config file — set what you need before invoking the CLI.

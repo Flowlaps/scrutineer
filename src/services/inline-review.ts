@@ -8,7 +8,7 @@ import {
   type PersonaReview,
   type ReviewFinding,
 } from "./review-schema.js";
-import { buildSandboxSection } from "./report.js";
+import { buildSandboxSection, buildTruncationNotice } from "./report.js";
 
 export interface InlineReviewContent {
   body: string;
@@ -65,7 +65,7 @@ function findingsSummaryLine(label: string, findings: ReviewFinding[]): string {
 }
 
 function buildCoverNote(result: ReviewResult, commentCount: number, unanchored: UnanchoredFinding[]): string {
-  const lines: string[] = ["# Scrutineer Review", ""];
+  const lines: string[] = ["# Scrutineer Review", "", ...buildTruncationNotice(result.truncations)];
 
   if (result.codeReview.review.verdict) {
     lines.push(`**Verdict:** ${singleLine(result.codeReview.review.verdict)}`, "");

@@ -315,6 +315,7 @@ test("returns the codeReview/securityAudit/sandboxTest shape assembled from all 
       code: "test-generator-output",
       result: { ok: true, logs: [], errors: [] },
     },
+    truncations: [],
   });
 });
 
@@ -1135,4 +1136,223 @@ test("runChunkedReviewPipeline merges a cross-chunk duplicate finding in the agg
     1,
     `expected the two chunks' near-duplicate findings to merge into one, got: ${JSON.stringify(result.codeReview.review.findings)}`,
   );
+});
+
+// resolvedFindings (issue #55): a prior --pr run's already-addressed findings
+// shouldn't be re-raised from scratch on every invocation.
+
+test("injects a still-resolved finding as a 'don't re-flag' instruction into both persona prompts", async () => {
+  resetState();
+
+  await runReviewPipeline({
+    ...baseInput,
+    diff: "diff --git a/example.ts b/example.ts\n@@ -1,1 +1,1 @@\n unrelated line\n",
+    resolvedFindings: [{ path: "example.ts", line: 42, body: "Missing null check on `user`." }],
+  });
+
+  const byKind = Object.fromEntries(calls.map((c) => [c.kind, c]));
+  for (const kind of ["code-reviewer", "security-auditor"] as const) {
+    assert.match(byKind[kind]!.systemText, /Previously Resolved Findings/);
+    assert.match(byKind[kind]!.systemText, /example\.ts:42/);
+    assert.match(byKind[kind]!.systemText, /Missing null check on `user`\./);
+  }
+  assert.doesNotMatch(byKind["test-generator"]!.systemText, /Previously Resolved Findings/);
+});
+
+test("omits the resolved-findings instruction entirely when resolvedFindings is absent", async () => {
+  resetState();
+
+  await runReviewPipeline(baseInput);
+
+  const byKind = Object.fromEntries(calls.map((c) => [c.kind, c]));
+  assert.doesNotMatch(byKind["code-reviewer"]!.systemText, /Previously Resolved Findings/);
+  assert.doesNotMatch(byKind["security-auditor"]!.systemText, /Previously Resolved Findings/);
+});
+
+test("excludes a resolved finding from suppression once its exact file/line is touched again in the current diff (regression)", async () => {
+  resetState();
+  // New-side line numbers for this hunk: 10 (context "line10"), 11 (the
+  // replaced "newline11" line), 12 (context "line12") — see parseDiffHunks.
+  // Line 11 is the one this diff actually changed again.
+  const regressedDiff = [
+    "diff --git a/example.ts b/example.ts",
+    "--- a/example.ts",
+    "+++ b/example.ts",
+    "@@ -10,3 +10,3 @@",
+    " line10",
+    "-oldline11",
+    "+newline11",
+    " line12",
+    "",
+  ].join("\n");
+
+  await runReviewPipeline({
+    ...baseInput,
+    diff: regressedDiff,
+    resolvedFindings: [{ path: "example.ts", line: 11, body: "Regressed finding." }],
+  });
+
+  const codeReviewCall = calls.find((c) => c.kind === "code-reviewer")!;
+  assert.doesNotMatch(
+    codeReviewCall.systemText,
+    /Previously Resolved Findings/,
+    "a regressed finding shouldn't produce a suppression instruction at all once it's the only one",
+  );
+});
+
+test("keeps suppressing a resolved finding whose exact line the current diff doesn't touch", async () => {
+  resetState();
+  const untouchedDiff = [
+    "diff --git a/example.ts b/example.ts",
+    "--- a/example.ts",
+    "+++ b/example.ts",
+    "@@ -10,3 +10,3 @@",
+    " line10",
+    "-oldline11",
+    "+newline11",
+    " line12",
+    "",
+  ].join("\n");
+
+  await runReviewPipeline({
+    ...baseInput,
+    diff: untouchedDiff,
+    // Line 99 is nowhere in the hunk above, so this thread isn't regressed.
+    resolvedFindings: [{ path: "example.ts", line: 99, body: "Should stay suppressed." }],
+  });
+
+  const codeReviewCall = calls.find((c) => c.kind === "code-reviewer")!;
+  assert.match(codeReviewCall.systemText, /Previously Resolved Findings/);
+  assert.match(codeReviewCall.systemText, /Should stay suppressed/);
+});
+
+test("keeps suppressing a resolved finding with no line (file-level) regardless of the diff", async () => {
+  resetState();
+
+  await runReviewPipeline({
+    ...baseInput,
+    resolvedFindings: [{ path: "example.ts", line: null, body: "File-level note." }],
+  });
+
+  const codeReviewCall = calls.find((c) => c.kind === "code-reviewer")!;
+  assert.match(codeReviewCall.systemText, /Previously Resolved Findings/);
+  assert.match(codeReviewCall.systemText, /\[example\.ts\] File-level note\./);
+});
+
+test("applies the same PR-wide resolvedFindings instruction to every chunk in runChunkedReviewPipeline, checked against the full batch diff", async () => {
+  resetState();
+
+  await runChunkedReviewPipeline({
+    ...chunkedBaseInput,
+    fullDiff: "diff --git a/unrelated.ts b/unrelated.ts\n@@ -1,1 +1,1 @@\n x\n",
+    resolvedFindings: [{ path: "a.ts", line: 5, body: "Already fixed." }],
+  });
+
+  const codeReviewCalls = calls.filter((c) => c.kind === "code-reviewer");
+  assert.equal(codeReviewCalls.length, 2, "expected one code-reviewer call per chunk");
+  for (const call of codeReviewCalls) {
+    assert.match(call.systemText, /Previously Resolved Findings/);
+    assert.match(call.systemText, /Already fixed\./);
+  }
+});
+
+// Cross-chunk severity downgrade (issue #55): a chunk can't see files outside
+// its own file list, so a finding depending on one of those files is only a
+// suspicion, not a confirmed defect.
+
+test("tells each chunk's personas which batch files are outside its own context", async () => {
+  resetState();
+
+  await runChunkedReviewPipeline(chunkedBaseInput);
+
+  const codeReviewCalls = calls.filter((c) => c.kind === "code-reviewer");
+  assert.equal(codeReviewCalls.length, 2);
+  assert.match(codeReviewCalls[0]!.systemText, /Cross-File Context \(chunk 1\/2\)/);
+  assert.match(codeReviewCalls[0]!.systemText, /NOT in this call's context: b\.ts/);
+  assert.match(codeReviewCalls[1]!.systemText, /Cross-File Context \(chunk 2\/2\)/);
+  assert.match(codeReviewCalls[1]!.systemText, /NOT in this call's context: a\.ts/);
+});
+
+test("does not inject cross-file-context instructions in the unchunked pipeline (nothing is out of context)", async () => {
+  resetState();
+
+  await runReviewPipeline(baseInput);
+
+  const codeReviewCall = calls.find((c) => c.kind === "code-reviewer")!;
+  assert.doesNotMatch(codeReviewCall.systemText, /Cross-File Context/);
+});
+
+test("forces a chunk finding's severity down to Info once it's marked as needing cross-chunk follow-up, regardless of what severity the model assigned", async () => {
+  resetState();
+  customFindingsQueue["security-auditor"] = [
+    [
+      finding({
+        file: "a.ts",
+        severity: "Critical",
+        description: "needs follow-up in chunk 1/2: cannot confirm without seeing b.ts",
+      }),
+    ],
+    [finding({ file: "b.ts", severity: "Medium", description: "an unrelated, fully confirmed issue" })],
+  ];
+
+  const result = await runChunkedReviewPipeline(chunkedBaseInput);
+
+  const capped = result.securityAudit.review.findings.find((f) => f.file === "a.ts");
+  const uncapped = result.securityAudit.review.findings.find((f) => f.file === "b.ts");
+  assert.equal(capped?.severity, "Info", `expected the follow-up-marked finding capped to Info, got: ${JSON.stringify(capped)}`);
+  assert.equal(uncapped?.severity, "Medium", "an unrelated finding without the marker should keep its own severity");
+  // The rendered markdown must reflect the same capped severity, not the
+  // model's original (uncapped) choice — renderPersonaReviewMarkdown groups
+  // findings by severity, so a stale severity there would silently reappear
+  // under the wrong heading.
+  assert.doesNotMatch(result.securityAudit.markdown, /### Critical/);
+});
+
+test("leaves a finding's severity untouched in the unchunked pipeline even if its description happens to contain the follow-up phrase", async () => {
+  resetState();
+  customFindingsQueue["code-reviewer"] = [
+    [finding({ severity: "Critical", description: "needs follow-up in chunk 1/2: coincidental phrasing" })],
+  ];
+
+  const result = await runReviewPipeline(baseInput);
+
+  assert.equal(result.codeReview.review.findings[0]?.severity, "Critical");
+});
+
+// Truncation notices (issue #55): a truncated AST/diff section should be
+// visible to whoever reads the posted review, not just stderr.
+
+test("returns a TruncationNotice in ReviewResult.truncations when the AST/diff section is truncated", async () => {
+  resetState();
+
+  const result = await runReviewPipeline({ ...baseInput, astContext: "x".repeat(40_001) });
+
+  assert.equal(result.truncations.length, 1);
+  assert.equal(result.truncations[0]?.section, "AST context");
+  assert.equal(result.truncations[0]?.filePath, "example.ts");
+  assert.equal(result.truncations[0]?.omittedChars, 1);
+});
+
+test("returns an empty truncations array when nothing was truncated", async () => {
+  resetState();
+
+  const result = await runReviewPipeline(baseInput);
+
+  assert.deepEqual(result.truncations, []);
+});
+
+test("collects truncations across every chunk plus the full-batch sandbox-test call in runChunkedReviewPipeline", async () => {
+  resetState();
+
+  const result = await runChunkedReviewPipeline({
+    ...chunkedBaseInput,
+    chunks: [
+      { ...chunkedBaseInput.chunks[0]!, astContext: "x".repeat(40_001) },
+      { ...chunkedBaseInput.chunks[1]!, diff: "y".repeat(40_001) },
+    ],
+    fullAstContext: "z".repeat(40_001),
+  });
+
+  const sections = result.truncations.map((t) => t.section).sort();
+  assert.deepEqual(sections, ["AST context", "AST context", "diff"]);
 });

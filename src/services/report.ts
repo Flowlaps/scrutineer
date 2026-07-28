@@ -1,4 +1,4 @@
-import type { ReviewResult } from "./ai-orchestrator.js";
+import type { ReviewResult, TruncationNotice } from "./ai-orchestrator.js";
 import type { ProviderId } from "../utils/model-factory.js";
 
 export interface ReportInput {
@@ -20,6 +20,13 @@ export function codeFence(code: string): string {
   return "`".repeat(Math.max(3, longestRun + 1));
 }
 
+const CONFIDENCE_LOG_PATTERN = /^CONFIDENCE:\s*(.+)$/im;
+
+function findConfidenceNote(logs: string[]): string | undefined {
+  const match = logs.join("\n").match(CONFIDENCE_LOG_PATTERN);
+  return match?.[1]?.trim();
+}
+
 // Exported so inline-review.ts (issue #46 step 4) can home the Sandbox Test
 // section in a PR review's top-level cover-note body instead of duplicating
 // this rendering — the sandbox result doesn't anchor to any one diff line, so
@@ -29,6 +36,18 @@ export function buildSandboxSection(sandboxTest: ReviewResult["sandboxTest"]): s
   const fence = codeFence(sandboxTest.code);
 
   const sections = ["## Sandbox Test", "", `**Result:** ${sandboxStatus}`, ""];
+
+  if (!sandboxTest.result.ok) {
+    const confidence = findConfidenceNote(sandboxTest.result.logs);
+    sections.push(
+      confidence
+        ? `**Confidence:** ${confidence}`
+        : "**Confidence:** unclear — this is a smoke test the model reimplemented from the diff, not the " +
+            "reviewed file itself, so a FAILED result may point to a bug in that reimplementation rather than " +
+            "the code under review.",
+      "",
+    );
+  }
 
   const detail = [`${fence}js`, sandboxTest.code, fence];
 
@@ -54,13 +73,28 @@ export function buildSandboxSection(sandboxTest: ReviewResult["sandboxTest"]): s
   return sections;
 }
 
+// Exported so inline-review.ts can render the same banner in its cover note.
+export function buildTruncationNotice(truncations: TruncationNotice[]): string[] {
+  if (truncations.length === 0) {
+    return [];
+  }
+  const totalOmittedChars = truncations.reduce((sum, notice) => sum + notice.omittedChars, 0);
+  return [
+    `⚠️ **This review was truncated** — ${totalOmittedChars} character(s) across ${truncations.length} ` +
+      "section(s) were omitted before being sent to the model. Some findings may be incomplete. See the " +
+      "Actions log (or stderr) for the full, untruncated content.",
+    "",
+  ];
+}
+
 export function buildReportMarkdown(input: ReportInput): string {
   const { filePath, provider, model, result, generatedAt = new Date() } = input;
-  const { codeReview, securityAudit, sandboxTest } = result;
+  const { codeReview, securityAudit, sandboxTest, truncations } = result;
 
   const sections = [
     "# Scrutineer Review Report",
     "",
+    ...buildTruncationNotice(truncations),
     `- **File:** \`${filePath}\``,
     `- **Provider:** ${provider}`,
     `- **Model:** ${model}`,

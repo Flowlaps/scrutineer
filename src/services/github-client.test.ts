@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseGitHubRemote, postPrComment, postPrReview } from "./github-client.js";
+import {
+  getResolvedThreads,
+  MAX_RESOLVED_THREAD_PAGES,
+  parseGitHubRemote,
+  postPrComment,
+  postPrReview,
+} from "./github-client.js";
 
 test("parses an SSH remote URL", () => {
   assert.deepEqual(parseGitHubRemote("git@github.com:dallaskoncir/scrutineer.git"), {
@@ -199,4 +205,181 @@ test("postPrReview throws with response detail on a non-ok response", async (t) 
     postPrReview({ owner: "o", repo: "r", pr: 999, body: "x", comments: [], token: "tok" }),
     /HTTP 422.*line must be part of the diff/,
   );
+});
+
+function reviewThreadsPage(nodes: unknown[], hasNextPage = false, endCursor: string | null = null) {
+  return {
+    data: {
+      repository: {
+        pullRequest: {
+          reviewThreads: { pageInfo: { hasNextPage, endCursor }, nodes },
+        },
+      },
+    },
+  };
+}
+
+test("getResolvedThreads posts a GraphQL query and returns only resolved threads", async (t) => {
+  const originalFetch = global.fetch;
+  let capturedUrl: string | undefined;
+  let capturedInit: RequestInit | undefined;
+
+  global.fetch = (async (url: string, init: RequestInit) => {
+    capturedUrl = url;
+    capturedInit = init;
+    return {
+      ok: true,
+      status: 200,
+      json: async () =>
+        reviewThreadsPage([
+          { isResolved: true, path: "src/foo.ts", line: 12, comments: { nodes: [{ body: "fix this" }] } },
+          { isResolved: false, path: "src/bar.ts", line: 3, comments: { nodes: [{ body: "still open" }] } },
+        ]),
+    } as Response;
+  }) as typeof fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  const result = await getResolvedThreads("o", "r", 1, "tok");
+
+  assert.equal(capturedUrl, "https://api.github.com/graphql");
+  assert.equal(capturedInit?.method, "POST");
+  const headers = capturedInit?.headers as Record<string, string>;
+  assert.equal(headers.Authorization, "Bearer tok");
+  const sentBody = JSON.parse(capturedInit?.body as string);
+  assert.match(sentBody.query, /reviewThreads/);
+  assert.deepEqual(sentBody.variables, { owner: "o", repo: "r", pr: 1, after: null });
+  assert.ok(capturedInit?.signal instanceof AbortSignal, "expected the request to be bounded by a timeout signal");
+
+  assert.deepEqual(result, [{ path: "src/foo.ts", line: 12, body: "fix this" }]);
+});
+
+test("getResolvedThreads gives up after MAX_RESOLVED_THREAD_PAGES instead of looping forever on a misbehaving response", async (t) => {
+  const originalFetch = global.fetch;
+  let fetchCount = 0;
+
+  global.fetch = (async () => {
+    fetchCount++;
+    return {
+      ok: true,
+      status: 200,
+      json: async () =>
+        // Always reports another page, with no resolved threads to make progress on.
+        reviewThreadsPage([], true, "same-cursor"),
+    } as Response;
+  }) as typeof fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  await assert.rejects(getResolvedThreads("o", "r", 1, "tok"), /exceeded \d+ pages/);
+  assert.equal(fetchCount, MAX_RESOLVED_THREAD_PAGES);
+});
+
+test("getResolvedThreads paginates across multiple pages until hasNextPage is false", async (t) => {
+  const originalFetch = global.fetch;
+  const capturedAfters: (string | null)[] = [];
+
+  global.fetch = (async (_url: string, init: RequestInit) => {
+    const variables = JSON.parse(init.body as string).variables as { after: string | null };
+    capturedAfters.push(variables.after);
+    if (variables.after === null) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () =>
+          reviewThreadsPage(
+            [{ isResolved: true, path: "src/a.ts", line: 1, comments: { nodes: [{ body: "page 1" }] } }],
+            true,
+            "cursor-1",
+          ),
+      } as Response;
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () =>
+        reviewThreadsPage([{ isResolved: true, path: "src/b.ts", line: 2, comments: { nodes: [{ body: "page 2" }] } }]),
+    } as Response;
+  }) as typeof fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  const result = await getResolvedThreads("o", "r", 1, "tok");
+
+  assert.deepEqual(capturedAfters, [null, "cursor-1"]);
+  assert.deepEqual(result, [
+    { path: "src/a.ts", line: 1, body: "page 1" },
+    { path: "src/b.ts", line: 2, body: "page 2" },
+  ]);
+});
+
+test("getResolvedThreads keeps a file-level (line: null) resolved thread", async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = (async () =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        reviewThreadsPage([
+          { isResolved: true, path: "src/foo.ts", line: null, comments: { nodes: [{ body: "file-level note" }] } },
+        ]),
+    }) as unknown as Response) as typeof fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  const result = await getResolvedThreads("o", "r", 1, "tok");
+
+  assert.deepEqual(result, [{ path: "src/foo.ts", line: null, body: "file-level note" }]);
+});
+
+test("getResolvedThreads skips a resolved thread with no comment body", async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = (async () =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () => reviewThreadsPage([{ isResolved: true, path: "src/foo.ts", line: 1, comments: { nodes: [] } }]),
+    }) as unknown as Response) as typeof fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  const result = await getResolvedThreads("o", "r", 1, "tok");
+
+  assert.deepEqual(result, []);
+});
+
+test("getResolvedThreads throws with response detail on a non-ok response", async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = (async () =>
+    ({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      text: async () => '{"message":"Bad credentials"}',
+    }) as Response) as typeof fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  await assert.rejects(getResolvedThreads("o", "r", 1, "tok"), /HTTP 401.*Bad credentials/);
+});
+
+test("getResolvedThreads throws when the GraphQL response carries an errors array", async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = (async () =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () => ({ errors: [{ message: "Could not resolve to a PullRequest" }] }),
+    }) as Response) as typeof fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  await assert.rejects(getResolvedThreads("o", "r", 999, "tok"), /Could not resolve to a PullRequest/);
 });
