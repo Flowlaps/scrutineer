@@ -141,3 +141,112 @@ export async function postPrReview(options: PostPrReviewOptions): Promise<PostPr
   );
   return { url: json.html_url };
 }
+
+// A prior finding's home on a resolved thread: the file/line it was anchored
+// to (both nullable — a thread can be file-level, or the line it anchored to
+// can have since been deleted from the diff) plus its first comment's body,
+// used as the finding's identity for suppression (issue #55).
+export interface ResolvedThreadSummary {
+  path: string;
+  line: number | null;
+  body: string;
+}
+
+const RESOLVED_THREADS_QUERY = `
+  query($owner: String!, $repo: String!, $pr: Int!, $after: String) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            isResolved
+            path
+            line
+            comments(first: 1) {
+              nodes { body }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+interface ReviewThreadNode {
+  isResolved: boolean;
+  path: string;
+  line: number | null;
+  comments: { nodes: { body: string }[] };
+}
+
+interface ReviewThreadsResponse {
+  data?: {
+    repository?: {
+      pullRequest?: {
+        reviewThreads?: {
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          nodes: ReviewThreadNode[];
+        };
+      };
+    };
+  };
+  errors?: { message: string }[];
+}
+
+/**
+ * Fetches every *resolved* review thread on a PR via the GraphQL API — the
+ * REST Reviews API has no `isResolved` field, only the GraphQL
+ * `PullRequestReviewThread` type does (issue #55). Used to suppress
+ * re-raising a finding that was already addressed and resolved on a prior
+ * `scrutineer review --pr` run against the same PR.
+ */
+export async function getResolvedThreads(
+  owner: string,
+  repo: string,
+  pr: number,
+  token: string,
+): Promise<ResolvedThreadSummary[]> {
+  const results: ResolvedThreadSummary[] = [];
+  let after: string | null = null;
+
+  do {
+    const response = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query: RESOLVED_THREADS_QUERY, variables: { owner, repo, pr, after } }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Failed to fetch resolved review threads (HTTP ${response.status}): ${detail || response.statusText}`);
+    }
+
+    const json = (await response.json()) as ReviewThreadsResponse;
+    if (json.errors && json.errors.length > 0) {
+      throw new Error(`Failed to fetch resolved review threads: ${json.errors.map((e) => e.message).join("; ")}`);
+    }
+
+    const reviewThreads = json.data?.repository?.pullRequest?.reviewThreads;
+    if (!reviewThreads) {
+      break;
+    }
+
+    for (const node of reviewThreads.nodes) {
+      if (!node.isResolved) {
+        continue;
+      }
+      const body = node.comments.nodes[0]?.body;
+      if (body) {
+        results.push({ path: node.path, line: node.line, body });
+      }
+    }
+
+    after = reviewThreads.pageInfo.hasNextPage ? reviewThreads.pageInfo.endCursor : null;
+  } while (after);
+
+  return results;
+}

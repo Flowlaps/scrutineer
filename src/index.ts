@@ -16,11 +16,14 @@ import {
 } from "./services/ai-orchestrator.js";
 import { buildReportMarkdown } from "./services/report.js";
 import { buildInlineReview } from "./services/inline-review.js";
-import { getRepoSlugFromGit, postPrReview } from "./services/github-client.js";
+import { getRepoSlugFromGit, getResolvedThreads, postPrReview, type ResolvedThreadSummary } from "./services/github-client.js";
 import { createModel, getModelId, MODEL_ENV_VAR, PROVIDER_IDS, type ProviderId } from "./utils/model-factory.js";
 import {
   chunkChangedFiles,
+  chunkChangedFilesWithDependencies,
+  exceedsMaxFilesForPrReview,
   exceedsMaxTotalFiles,
+  MAX_FILES_FOR_PR_REVIEW,
   MAX_FILES_PER_CHUNK,
   MAX_TOTAL_FILES,
 } from "./services/review-chunker.js";
@@ -197,7 +200,12 @@ program
         // calls instead of one call whose output/input a single batch could
         // overflow — see review-chunker.ts. A batch that fits in one chunk
         // (the common case) leaves fileChunks.length === 1 and the pipeline
-        // below runs exactly as it did before this feature existed.
+        // below runs exactly as it did before this feature existed. This
+        // naive, file-list-only split only decides how many chunks to expect
+        // up front (for the log message and the task list below) — the
+        // "Prepare chunks" task further down refines the actual file
+        // groupings using each file's own imports, once those are known
+        // (issue #55's chunk-widening).
         const fileChunks = chunkChangedFiles(files);
         if (fileChunks.length > 1) {
           clack.log.info(
@@ -207,13 +215,19 @@ program
         }
 
         const astByFile = new Map<string, string>();
+        const importsByFile = new Map<string, string[]>();
 
         await clack.tasks([
           {
             title: `Parse AST for ${files.length} file(s)`,
             task: () => {
               for (const f of files) {
-                astByFile.set(f, summaryToMarkdown(parseFile(f)));
+                const summary = parseFile(f);
+                astByFile.set(f, summaryToMarkdown(summary));
+                importsByFile.set(
+                  f,
+                  summary.imports.map((imp) => imp.moduleSpecifier),
+                );
               }
               astContext = files.map((f) => astByFile.get(f)).join("\n\n---\n\n");
               return "AST extracted";
@@ -231,8 +245,19 @@ program
                 {
                   title: `Prepare ${fileChunks.length} review chunk(s)`,
                   task: () => {
-                    reviewChunks = fileChunks.map((chunkFiles, i) => ({
-                      label: `Chunk ${i + 1}/${fileChunks.length} (${chunkFiles.length} file(s)) vs ${diffTarget}`,
+                    // Regrouped with import awareness now that every file's AST
+                    // has been parsed above — a known inter-file dependency
+                    // (e.g. a component and the page that renders it) lands in
+                    // the same chunk instead of being split by chance of list
+                    // position (issue #55). Usually produces the same grouping
+                    // as the naive split logged above; only actually reshuffles
+                    // when a real cross-chunk import link is found.
+                    const dependencyAwareChunks = chunkChangedFilesWithDependencies(
+                      files,
+                      (f) => importsByFile.get(f) ?? [],
+                    );
+                    reviewChunks = dependencyAwareChunks.map((chunkFiles, i) => ({
+                      label: `Chunk ${i + 1}/${dependencyAwareChunks.length} (${chunkFiles.length} file(s)) vs ${diffTarget}`,
                       changedFiles: chunkFiles,
                       astContext: chunkFiles.map((f) => astByFile.get(f)).join("\n\n---\n\n"),
                       diff: getDiffAgainstTarget(diffTarget, chunkFiles),
@@ -265,6 +290,39 @@ program
         ]);
       }
 
+      if (githubTarget && exceedsMaxFilesForPrReview(changedFiles)) {
+        console.error(
+          `scrutineer: this PR touches ${changedFiles.length} files. Split into smaller PRs for reliable ` +
+            `review results (limit: ${MAX_FILES_FOR_PR_REVIEW} files).`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      // Cross-run memory (issue #55): a prior --pr run's already-addressed
+      // findings shouldn't be re-raised from scratch on every invocation.
+      // Only fetched in --pr mode, since resolved review threads only exist
+      // once findings have actually been posted to a real PR.
+      let resolvedFindings: ResolvedThreadSummary[] | undefined;
+      if (githubTarget) {
+        await clack.tasks([
+          {
+            title: `Fetch resolved review threads on PR #${githubTarget.pr}`,
+            task: async () => {
+              resolvedFindings = await getResolvedThreads(
+                githubTarget.owner,
+                githubTarget.repo,
+                githubTarget.pr,
+                githubTarget.token,
+              );
+              return resolvedFindings.length > 0
+                ? `${resolvedFindings.length} resolved thread(s) found`
+                : "No resolved threads yet";
+            },
+          },
+        ]);
+      }
+
       await clack.tasks([
         {
           title: `Run AI review pipeline (${options.provider} / ${getModelId(model)})`,
@@ -280,6 +338,7 @@ program
                       fullDiff: diff,
                       changedFiles,
                       chunks: reviewChunks,
+                      resolvedFindings,
                     },
                     (event) =>
                       message(
@@ -289,7 +348,7 @@ program
                       ),
                   )
                 : await runReviewPipeline(
-                    { filePath: label, astContext, diff, provider: options.provider, model, changedFiles },
+                    { filePath: label, astContext, diff, provider: options.provider, model, changedFiles, resolvedFindings },
                     (stage) => message(STAGE_MESSAGES[stage]),
                   );
             reviewResult = result;

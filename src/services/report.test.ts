@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildReportMarkdown, codeFence } from "./report.js";
-import type { ReviewResult } from "./ai-orchestrator.js";
+import { buildReportMarkdown, buildTruncationNotice, codeFence } from "./report.js";
+import type { ReviewResult, TruncationNotice } from "./ai-orchestrator.js";
 
 function fakeResult(overrides: Partial<ReviewResult> = {}): ReviewResult {
   return {
@@ -17,6 +17,7 @@ function fakeResult(overrides: Partial<ReviewResult> = {}): ReviewResult {
       code: 'console.log("PASS");',
       result: { ok: true, logs: ["PASS"], errors: [] },
     },
+    truncations: [],
     ...overrides,
   };
 }
@@ -95,6 +96,77 @@ test("reports FAILED and includes an Errors section when the sandbox fails", () 
   // A failing sandbox run is exactly the case a reader needs without an extra
   // click, so the disclosure stays open by default.
   assert.match(markdown, /<details open>\n<summary>Generated test & output<\/summary>/);
+});
+
+test("reports FAILED with the model's own CONFIDENCE line, instead of the generic fallback disclaimer", () => {
+  const markdown = buildReportMarkdown({
+    filePath: "f.ts",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    result: fakeResult({
+      sandboxTest: {
+        code: "throw new Error('boom');",
+        result: {
+          ok: false,
+          logs: ['CONFIDENCE: harness-limitation - the reimplemented fixture is stale, not the reviewed code'],
+          errors: ["boom"],
+        },
+      },
+    }),
+  });
+
+  assert.match(markdown, /\*\*Confidence:\*\* harness-limitation - the reimplemented fixture is stale, not the reviewed code/);
+});
+
+test("falls back to a generic confidence disclaimer on failure when the model didn't log a CONFIDENCE line", () => {
+  const markdown = buildReportMarkdown({
+    filePath: "f.ts",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    result: fakeResult({
+      sandboxTest: { code: "throw new Error('boom');", result: { ok: false, logs: [], errors: ["boom"] } },
+    }),
+  });
+
+  assert.match(markdown, /\*\*Confidence:\*\* unclear/);
+});
+
+test("omits any Confidence line when the sandbox test passes", () => {
+  const markdown = buildReportMarkdown({ filePath: "f.ts", provider: "anthropic", model: "claude-sonnet-5", result: fakeResult() });
+
+  assert.doesNotMatch(markdown, /\*\*Confidence:\*\*/);
+});
+
+test("buildTruncationNotice returns nothing when there are no truncations", () => {
+  assert.deepEqual(buildTruncationNotice([]), []);
+});
+
+test("buildTruncationNotice summarizes total omitted characters across every notice", () => {
+  const truncations: TruncationNotice[] = [
+    { section: "AST context", filePath: "a.ts", omittedChars: 100 },
+    { section: "diff", filePath: "b.ts", omittedChars: 50 },
+  ];
+
+  const notice = buildTruncationNotice(truncations).join("\n");
+
+  assert.match(notice, /truncated/i);
+  assert.match(notice, /150 character/);
+  assert.match(notice, /2 section/);
+});
+
+test("buildReportMarkdown renders the truncation banner near the top when truncations occurred", () => {
+  const markdown = buildReportMarkdown({
+    filePath: "f.ts",
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    result: fakeResult({ truncations: [{ section: "AST context", filePath: "f.ts", omittedChars: 42 }] }),
+  });
+
+  assert.match(markdown, /This review was truncated/);
+  assert.ok(
+    markdown.indexOf("truncated") < markdown.indexOf("## Code Review"),
+    "expected the truncation banner before the Code Review section",
+  );
 });
 
 test("codeFence picks a longer fence when the code contains backticks", () => {

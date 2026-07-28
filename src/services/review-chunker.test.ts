@@ -1,6 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chunkChangedFiles, exceedsMaxTotalFiles, MAX_FILES_PER_CHUNK, MAX_TOTAL_FILES } from "./review-chunker.js";
+import {
+  chunkChangedFiles,
+  chunkChangedFilesWithDependencies,
+  exceedsMaxFilesForPrReview,
+  exceedsMaxTotalFiles,
+  groupFilesByDependency,
+  MAX_FILES_FOR_PR_REVIEW,
+  MAX_FILES_PER_CHUNK,
+  MAX_TOTAL_FILES,
+} from "./review-chunker.js";
 
 test("returns an empty array for an empty file list", () => {
   assert.deepEqual(chunkChangedFiles([]), []);
@@ -57,4 +66,73 @@ test("exceedsMaxTotalFiles is false at and under the limit, true just over it", 
 test("exceedsMaxTotalFiles uses MAX_TOTAL_FILES as its default", () => {
   assert.equal(exceedsMaxTotalFiles(Array.from({ length: MAX_TOTAL_FILES }, (_, i) => `f${i}.ts`)), false);
   assert.equal(exceedsMaxTotalFiles(Array.from({ length: MAX_TOTAL_FILES + 1 }, (_, i) => `f${i}.ts`)), true);
+});
+
+test("exceedsMaxFilesForPrReview is false at and under the limit, true just over it", () => {
+  assert.equal(exceedsMaxFilesForPrReview(Array.from({ length: 10 }, (_, i) => `f${i}.ts`), 10), false);
+  assert.equal(exceedsMaxFilesForPrReview(Array.from({ length: 11 }, (_, i) => `f${i}.ts`), 10), true);
+});
+
+test("exceedsMaxFilesForPrReview uses MAX_FILES_FOR_PR_REVIEW as its default", () => {
+  assert.equal(exceedsMaxFilesForPrReview(Array.from({ length: MAX_FILES_FOR_PR_REVIEW }, (_, i) => `f${i}.ts`)), false);
+  assert.equal(exceedsMaxFilesForPrReview(Array.from({ length: MAX_FILES_FOR_PR_REVIEW + 1 }, (_, i) => `f${i}.ts`)), true);
+});
+
+test("groupFilesByDependency puts unrelated files each in their own singleton group, in original order", () => {
+  const files = ["a.ts", "b.ts", "c.ts"];
+  assert.deepEqual(groupFilesByDependency(files, () => []), [["a.ts"], ["b.ts"], ["c.ts"]]);
+});
+
+test("groupFilesByDependency groups a file with the sibling it imports via a relative specifier", () => {
+  const files = ["src/components/Foo.tsx", "src/app/page.tsx", "src/unrelated.ts"];
+  const imports: Record<string, string[]> = {
+    "src/app/page.tsx": ["../components/Foo"],
+  };
+  const groups = groupFilesByDependency(files, (f) => imports[f] ?? []);
+
+  assert.equal(groups.length, 2);
+  const linkedGroup = groups.find((g) => g.length === 2);
+  assert.deepEqual(new Set(linkedGroup), new Set(["src/components/Foo.tsx", "src/app/page.tsx"]));
+});
+
+test("groupFilesByDependency transitively links a chain of imports into one group", () => {
+  const files = ["a.ts", "b.ts", "c.ts"];
+  const imports: Record<string, string[]> = {
+    "a.ts": ["./b"],
+    "b.ts": ["./c"],
+  };
+  const groups = groupFilesByDependency(files, (f) => imports[f] ?? []);
+
+  assert.equal(groups.length, 1);
+  assert.deepEqual(new Set(groups[0]), new Set(files));
+});
+
+test("groupFilesByDependency ignores a bare/package import specifier", () => {
+  const files = ["a.ts", "b.ts"];
+  const imports: Record<string, string[]> = { "a.ts": ["react"] };
+  assert.deepEqual(groupFilesByDependency(files, (f) => imports[f] ?? []), [["a.ts"], ["b.ts"]]);
+});
+
+test("groupFilesByDependency ignores a relative import that doesn't resolve to a file in the batch", () => {
+  const files = ["a.ts", "b.ts"];
+  const imports: Record<string, string[]> = { "a.ts": ["./not-in-batch"] };
+  assert.deepEqual(groupFilesByDependency(files, (f) => imports[f] ?? []), [["a.ts"], ["b.ts"]]);
+});
+
+test("chunkChangedFilesWithDependencies matches the naive chunker when no dependency links exist", () => {
+  const files = Array.from({ length: 15 }, (_, i) => `file${i}.ts`);
+  assert.deepEqual(
+    chunkChangedFilesWithDependencies(files, () => [], 10),
+    chunkChangedFiles(files, 10),
+  );
+});
+
+test("chunkChangedFilesWithDependencies keeps a dependent pair together across a chunk boundary", () => {
+  const files = [...Array.from({ length: 9 }, (_, i) => `file${i}.ts`), "src/components/Foo.tsx", "src/app/page.tsx"];
+  const imports: Record<string, string[]> = { "src/app/page.tsx": ["../components/Foo"] };
+
+  const chunks = chunkChangedFilesWithDependencies(files, (f) => imports[f] ?? [], 10);
+
+  const chunkContaining = (file: string) => chunks.find((chunk) => chunk.includes(file));
+  assert.deepEqual(chunkContaining("src/components/Foo.tsx"), chunkContaining("src/app/page.tsx"));
 });
