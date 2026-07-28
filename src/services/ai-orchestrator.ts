@@ -127,7 +127,7 @@ Populate the requested schema instead of writing out the "Output Format" markdow
 - Positive Observations -> \`positiveObservations\`
 - The general Recommendations section -> \`additionalNotes\`
 - \`summary\` should be short overview prose, not the Critical/High/Medium/Low/Info counts — a reader can derive those directly from \`findings\`
-Leave \`verdict\` unset — this persona's template has none.`;
+Set \`verdict\` to \`null\` — this persona's template has none.`;
 
 const SCHEMA_BRIDGE_BY_PERSONA: Record<PersonaId, string> = {
   "code-reviewer": CODE_REVIEWER_SCHEMA_BRIDGE,
@@ -441,6 +441,7 @@ function withTruncationNotice(review: PersonaReview, finishReason: FinishReason)
 // rather than inspecting a successful result's finishReason after the fact —
 // unlike generateText, there is no successful result to inspect.
 const TRUNCATED_FALLBACK: PersonaReview = {
+  verdict: null,
   summary: "_Review truncated: the model's response exceeded the output token budget before completing._",
   findings: [],
   positiveObservations: [],
@@ -856,7 +857,7 @@ function neutralizeStructuralTags(text: string): string {
 
 // Groups near-duplicate findings for dedupeFindings below: two findings only
 // ever compare as candidates if they name the same file and the same line
-// (including both being file-level, i.e. `line` undefined on both) — chunks
+// (including both being file-level, i.e. `line` null on both) — chunks
 // are disjoint file sets in practice, so this also means findings from two
 // different chunks essentially never collide here, except for the genuine
 // cross-cutting case (e.g. both personas' chunks independently flag the same
@@ -1177,12 +1178,13 @@ export async function runChunkedReviewPipeline(
   // running the merged set through dedupeFindings (issue #46 step 5) so a
   // near-identical finding that surfaced from two chunks (e.g. both happening
   // to flag the same cross-cutting concern in a shared file) becomes one
-  // inline review comment, not two. `verdict` is intentionally left unset — a
+  // inline review comment, not two. `verdict` is intentionally `null` — a
   // chunked batch has no single verdict; each chunk's own (if any) is still
   // visible inside that chunk's collapsed markdown section above.
   function mergeChunkedReview(sectionOf: (result: ChunkReviewPair) => PersonaReviewOutcome): PersonaReview {
     const reviews = chunkResults.map((r) => sectionOf(r).review);
     return {
+      verdict: null,
       summary: reviews
         .map((r) => r.summary.trim())
         .filter((text) => text.length > 0)

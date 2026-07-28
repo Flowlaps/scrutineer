@@ -185,5 +185,5 @@ test("resolveInlineLocation downgrades to file-level when the finding's file isn
 
 test("resolveInlineLocation passes through a finding that never had a line", () => {
   const hunks = parseDiffHunks(MULTI_HUNK_DIFF);
-  assert.deepEqual(resolveInlineLocation({ file: "src/foo.ts" }, hunks), { file: "src/foo.ts" });
+  assert.deepEqual(resolveInlineLocation({ file: "src/foo.ts", line: null }, hunks), { file: "src/foo.ts" });
 });

@@ -83,7 +83,7 @@ export function resolveInlineLocation(
   finding: Pick<ReviewFinding, "file" | "line">,
   hunkLines: Map<string, Set<number>>,
 ): FindingLocation {
-  if (finding.line !== undefined && hunkLines.get(finding.file)?.has(finding.line)) {
+  if (finding.line != null && hunkLines.get(finding.file)?.has(finding.line)) {
     return { file: finding.file, line: finding.line };
   }
   return { file: finding.file };

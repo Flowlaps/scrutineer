@@ -69,7 +69,7 @@ function defaultReview(kind: PersonaKind): PersonaReview {
   // Renders (via renderPersonaReviewMarkdown) to exactly "${kind}-output" —
   // every other field is empty/unset, so aggregate()'s markdown output stays
   // byte-identical to this suite's pre-structured-output expectations.
-  return { summary: `${kind}-output`, findings: [], positiveObservations: [], additionalNotes: [] };
+  return { verdict: null, summary: `${kind}-output`, findings: [], positiveObservations: [], additionalNotes: [] };
 }
 
 let calls: RecordedCall[] = [];
@@ -1039,7 +1039,7 @@ test("names the specific chunk in a truncation warning, via that chunk's own lab
 // dedupeFindings (issue #46 step 5) — cross-chunk near-duplicate merging.
 
 function finding(overrides: Partial<ReviewFinding>): ReviewFinding {
-  return { file: "src/shared.ts", line: 10, severity: "Important", description: "placeholder", ...overrides };
+  return { file: "src/shared.ts", line: 10, severity: "Important", title: null, description: "placeholder", ...overrides };
 }
 
 test("dedupeFindings merges a genuine cross-chunk duplicate: same file/line, near-identically-worded description", () => {
@@ -1084,7 +1084,7 @@ test("dedupeFindings returns an empty array for an empty findings array", () => 
 });
 
 test("dedupeFindings keeps a file-level finding (no line) and a line-anchored finding on the same file separate, even with identical wording", () => {
-  const fileLevel = finding({ line: undefined, description: "Missing input validation somewhere in this file." });
+  const fileLevel = finding({ line: null, description: "Missing input validation somewhere in this file." });
   const lineAnchored = finding({ line: 10, description: "Missing input validation somewhere in this file." });
 
   const result = dedupeFindings([fileLevel, lineAnchored]);
