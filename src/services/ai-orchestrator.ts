@@ -396,6 +396,24 @@ function friendlyModelError(error: unknown, provider: ProviderId, model: Languag
   );
 }
 
+// Diagnostic for issue #59: confirms the resolved-findings suppression text
+// actually reaches a run's request (as opposed to a model just not honoring
+// it), since there's no other visibility into what a given provider's
+// prompt looks like once assembled.
+//
+// The preview echoes untrusted content (GitHub review-thread bodies, via
+// resolvedFindings) to stderr, so C0 control chars/DEL are stripped first —
+// otherwise a comment body containing an ANSI escape sequence would be
+// interpreted by whoever's terminal or CI log is watching stdout.
+function logResolvedFindingsInstructions(instructions: string): void {
+  if (instructions.length === 0) {
+    return;
+  }
+  const sanitized = instructions.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+  const preview = sanitized.length > 200 ? `${sanitized.slice(0, 200)}…` : sanitized;
+  console.error(`[scrutineer] resolved-findings instructions — length: ${instructions.length}, preview: ${JSON.stringify(preview)}`);
+}
+
 function logUsage(stage: ReviewStage, usage: LanguageModelUsage): void {
   const { inputTokens, outputTokens, inputTokenDetails } = usage;
   console.error(
@@ -621,6 +639,7 @@ export async function runReviewPipeline(
   const dynamicSkills = buildDynamicSkillInstructions(input.changedFiles);
 
   const resolvedFindingsInstructions = buildResolvedFindingsInstructions(input.resolvedFindings, input.diff);
+  logResolvedFindingsInstructions(resolvedFindingsInstructions);
   const codeReviewerAdditions = [dynamicSkills.codeReviewerAdditions, resolvedFindingsInstructions]
     .filter((text) => text.length > 0)
     .join("\n\n");
@@ -1014,6 +1033,7 @@ export async function runChunkedReviewPipeline(
   const truncations: TruncationNotice[] = [];
 
   const resolvedFindingsInstructions = buildResolvedFindingsInstructions(input.resolvedFindings, input.fullDiff);
+  logResolvedFindingsInstructions(resolvedFindingsInstructions);
 
   async function runChunkReviewPair(chunk: ReviewChunk, chunkIndex: number): Promise<ChunkReviewPair> {
     const chunkInput: ReviewInput = {
