@@ -956,9 +956,19 @@ function similarity(a: Set<string>, b: Set<string>): number {
 // directly against plain ReviewFinding fixtures instead of driving the whole
 // mocked pipeline just to reach this logic.
 export function dedupeFindings(findings: ReviewFinding[]): ReviewFinding[] {
+  return dedupeByFinding(findings, (finding) => finding);
+}
+
+// Same bucket/similarity logic as dedupeFindings above, generalized over any
+// item that carries a ReviewFinding (e.g. inline-review.ts's persona-labeled
+// findings), so cross-persona dedup (issue #61: code-reviewer and
+// security-auditor both flagging the same file+line) reuses one
+// implementation instead of a second copy of the bucketing loop.
+export function dedupeByFinding<T>(items: T[], getFinding: (item: T) => ReviewFinding): T[] {
   const buckets = new Map<string, { words: Set<string> }[]>();
-  const result: ReviewFinding[] = [];
-  for (const finding of findings) {
+  const result: T[] = [];
+  for (const item of items) {
+    const finding = getFinding(item);
     const key = findingDedupeKey(finding);
     const words = descriptionWordSet(finding);
     const bucket = buckets.get(key);
@@ -971,7 +981,7 @@ export function dedupeFindings(findings: ReviewFinding[]): ReviewFinding[] {
     } else {
       buckets.set(key, [{ words }]);
     }
-    result.push(finding);
+    result.push(item);
   }
   return result;
 }

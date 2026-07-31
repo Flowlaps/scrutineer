@@ -179,7 +179,7 @@ test("neutralizes a heading-injection attempt embedded in a finding's file path 
   assert.match(body, /Forged Heading Injected via file field/);
 });
 
-test("two personas flagging the same file/line each get their own inline comment, not merged (documents accepted behavior)", () => {
+test("two personas flagging the same file/line with genuinely different findings both get their own inline comment (not merged, since wording isn't a near-duplicate)", () => {
   const result = fakeResult({
     codeReview: { findings: [{ file: "src/foo.ts", line: 2, severity: "Critical", title: null, description: "code review take" }] },
     securityAudit: { findings: [{ file: "src/foo.ts", line: 2, severity: "High", title: null, description: "security take" }] },
@@ -189,6 +189,41 @@ test("two personas flagging the same file/line each get their own inline comment
 
   assert.equal(comments.length, 2);
   assert.ok(comments.every((c) => c.path === "src/foo.ts" && c.line === 2));
-  assert.match(comments[0]?.body ?? "", /Code Review — Critical/);
-  assert.match(comments[1]?.body ?? "", /Security Audit — High/);
+  assert.match(comments[0]?.body ?? "", /Security Audit — High/);
+  assert.match(comments[1]?.body ?? "", /Code Review — Critical/);
+});
+
+test("two personas independently flagging the same file/line with near-identical wording are merged into one inline comment, keeping the security-auditor's version (issue #61)", () => {
+  const result = fakeResult({
+    codeReview: {
+      findings: [
+        {
+          file: "src/foo.ts",
+          line: 2,
+          severity: "Important",
+          title: "Missing Error Handling",
+          description:
+            "The function currently does not handle errors from fs.readFile. If the file does not exist or another error occurs, it will lead to unhandled promise rejections. Wrap the readFile call in a try-catch block to gracefully handle errors.",
+        },
+      ],
+    },
+    securityAudit: {
+      findings: [
+        {
+          file: "src/foo.ts",
+          line: 2,
+          severity: "High",
+          title: "Missing Error Handling",
+          description:
+            "The function currently lacks error handling for the fs.readFile call. If the specified file does not exist or another I/O error occurs, it may lead to unhandled promise rejections, which can crash the application or expose the user to unhandled errors. Wrap the readFile call in a try-catch block.",
+        },
+      ],
+    },
+  });
+
+  const { comments } = buildInlineReview(result, DIFF);
+
+  assert.equal(comments.length, 1);
+  assert.match(comments[0]?.body ?? "", /Security Audit — High: Missing Error Handling/);
+  assert.doesNotMatch(comments[0]?.body ?? "", /Code Review/);
 });

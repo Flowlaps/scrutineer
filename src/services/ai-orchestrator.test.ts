@@ -292,6 +292,7 @@ const {
   MAX_CONCURRENT_CHUNKS,
   mapWithConcurrencyLimit,
   dedupeFindings,
+  dedupeByFinding,
 } = await import("./ai-orchestrator.js");
 
 const baseInput = {
@@ -1136,6 +1137,34 @@ test("runChunkedReviewPipeline merges a cross-chunk duplicate finding in the agg
     1,
     `expected the two chunks' near-duplicate findings to merge into one, got: ${JSON.stringify(result.codeReview.review.findings)}`,
   );
+});
+
+// dedupeByFinding (issue #61): the generic projection dedupeFindings itself
+// is now built on, exercised directly against a wrapper type rather than a
+// plain ReviewFinding[] (inline-review.ts's cross-persona use case).
+
+interface LabeledFinding {
+  label: string;
+  finding: ReviewFinding;
+}
+
+test("dedupeByFinding merges a near-duplicate through a projection, keeping the first-seen wrapped item intact", () => {
+  const a: LabeledFinding = { label: "a", finding: finding({ description: "Missing a null check on `user` before it is dereferenced." }) };
+  const b: LabeledFinding = { label: "b", finding: finding({ description: "Missing a null check on `user` before it gets dereferenced." }) };
+
+  const result = dedupeByFinding([a, b], (item) => item.finding);
+
+  assert.equal(result.length, 1, `expected the near-duplicate to be merged, got: ${JSON.stringify(result)}`);
+  assert.deepEqual(result[0], a, "expected the first-seen wrapped item to be kept, not just its projected finding");
+});
+
+test("dedupeByFinding keeps distinct wrapped items separate and preserves each one's full shape", () => {
+  const a: LabeledFinding = { label: "a", finding: finding({ description: "Missing a null check on `user` before it's dereferenced here." }) };
+  const b: LabeledFinding = { label: "b", finding: finding({ description: "This variable name shadows an outer-scope `config` and should be renamed." }) };
+
+  const result = dedupeByFinding([a, b], (item) => item.finding);
+
+  assert.deepEqual(result, [a, b], "expected both wrapped items to survive untouched");
 });
 
 // resolvedFindings (issue #55): a prior --pr run's already-addressed findings

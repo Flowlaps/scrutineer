@@ -1,13 +1,7 @@
-import type { ReviewResult } from "./ai-orchestrator.js";
+import { dedupeByFinding, type ReviewResult } from "./ai-orchestrator.js";
 import type { PrReviewComment } from "./github-client.js";
 import { parseDiffHunks, resolveInlineLocation } from "./diff-hunks.js";
-import {
-  groupFindingsBySeverity,
-  neutralizeBlockStarts,
-  singleLine,
-  type PersonaReview,
-  type ReviewFinding,
-} from "./review-schema.js";
+import { groupFindingsBySeverity, neutralizeBlockStarts, singleLine, type ReviewFinding } from "./review-schema.js";
 import { buildSandboxSection, buildTruncationNotice } from "./report.js";
 
 export interface InlineReviewContent {
@@ -18,6 +12,11 @@ export interface InlineReviewContent {
 interface UnanchoredFinding {
   personaLabel: string;
   file: string;
+  finding: ReviewFinding;
+}
+
+interface LabeledFinding {
+  personaLabel: string;
   finding: ReviewFinding;
 }
 
@@ -108,19 +107,23 @@ export function buildInlineReview(result: ReviewResult, diff: string): InlineRev
   const comments: PrReviewComment[] = [];
   const unanchored: UnanchoredFinding[] = [];
 
-  function processPersona(personaLabel: string, review: PersonaReview): void {
-    for (const finding of review.findings) {
-      const location = resolveInlineLocation(finding, hunkLines);
-      if (location.line !== undefined) {
-        comments.push({ path: location.file, line: location.line, body: findingCommentBody(personaLabel, finding) });
-      } else {
-        unanchored.push({ personaLabel, file: location.file, finding });
-      }
+  // Security-auditor's findings go first: when both personas flag the same
+  // file+line with substantially similar wording (issue #61), dedupeByFinding
+  // keeps the first occurrence per bucket, so this ordering keeps the
+  // security classification over the code-reviewer's on overlap.
+  const labeled: LabeledFinding[] = [
+    ...result.securityAudit.review.findings.map((finding) => ({ personaLabel: PERSONA_LABELS.securityAudit, finding })),
+    ...result.codeReview.review.findings.map((finding) => ({ personaLabel: PERSONA_LABELS.codeReview, finding })),
+  ];
+
+  for (const { personaLabel, finding } of dedupeByFinding(labeled, (item) => item.finding)) {
+    const location = resolveInlineLocation(finding, hunkLines);
+    if (location.line !== undefined) {
+      comments.push({ path: location.file, line: location.line, body: findingCommentBody(personaLabel, finding) });
+    } else {
+      unanchored.push({ personaLabel, file: location.file, finding });
     }
   }
-
-  processPersona(PERSONA_LABELS.codeReview, result.codeReview.review);
-  processPersona(PERSONA_LABELS.securityAudit, result.securityAudit.review);
 
   return { body: buildCoverNote(result, comments.length, unanchored), comments };
 }
