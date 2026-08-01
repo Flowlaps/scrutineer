@@ -35,6 +35,35 @@ export function getRepoSlugFromGit(): RepoSlug | undefined {
   return parseGitHubRemote(url);
 }
 
+export interface PrMetadata {
+  title: string;
+  body: string;
+}
+
+/**
+ * Fetches a PR's title/description (`GET /repos/{owner}/{repo}/pulls/{pr}`),
+ * so a review can weigh a persona's finding against what the author already
+ * said they implemented, tested, or deliberately scoped out (issue #64).
+ */
+export async function getPrMetadata(owner: string, repo: string, pr: number, token: string): Promise<PrMetadata> {
+  const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${pr}`;
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Failed to fetch PR metadata (HTTP ${response.status}): ${detail || response.statusText}`);
+  }
+
+  const json = (await response.json()) as { title?: string; body?: string | null };
+  return { title: json.title ?? "", body: json.body ?? "" };
+}
+
 /** Shared result shape for both write operations below — each just wraps the created object's `html_url`. */
 export interface GitHubPostResult {
   url: string;

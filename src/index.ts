@@ -16,7 +16,14 @@ import {
 } from "./services/ai-orchestrator.js";
 import { buildReportMarkdown } from "./services/report.js";
 import { buildInlineReview } from "./services/inline-review.js";
-import { getRepoSlugFromGit, getResolvedThreads, postPrReview, type ResolvedThreadSummary } from "./services/github-client.js";
+import {
+  getPrMetadata,
+  getRepoSlugFromGit,
+  getResolvedThreads,
+  postPrReview,
+  type PrMetadata,
+  type ResolvedThreadSummary,
+} from "./services/github-client.js";
 import { createModel, getModelId, MODEL_ENV_VAR, PROVIDER_IDS, type ProviderId } from "./utils/model-factory.js";
 import {
   chunkChangedFiles,
@@ -290,17 +297,18 @@ program
       }
 
       let resolvedFindings: ResolvedThreadSummary[] | undefined;
+      let prDescription: PrMetadata | undefined;
       if (githubTarget) {
         await clack.tasks([
           {
-            title: `Fetch resolved review threads on PR #${githubTarget.pr}`,
+            title: `Fetch PR #${githubTarget.pr} context (resolved threads + description)`,
             task: async () => {
-              resolvedFindings = await getResolvedThreads(
-                githubTarget.owner,
-                githubTarget.repo,
-                githubTarget.pr,
-                githubTarget.token,
-              );
+              // Independent reads against the same PR — run concurrently instead
+              // of sequencing two separate GitHub round trips (PR #66 review).
+              [resolvedFindings, prDescription] = await Promise.all([
+                getResolvedThreads(githubTarget.owner, githubTarget.repo, githubTarget.pr, githubTarget.token),
+                getPrMetadata(githubTarget.owner, githubTarget.repo, githubTarget.pr, githubTarget.token),
+              ]);
               return resolvedFindings.length > 0
                 ? `${resolvedFindings.length} resolved thread(s) found`
                 : "No resolved threads yet";
@@ -325,6 +333,7 @@ program
                       changedFiles,
                       chunks: reviewChunks,
                       resolvedFindings,
+                      prDescription,
                     },
                     (event) =>
                       message(
@@ -334,7 +343,16 @@ program
                       ),
                   )
                 : await runReviewPipeline(
-                    { filePath: label, astContext, diff, provider: options.provider, model, changedFiles, resolvedFindings },
+                    {
+                      filePath: label,
+                      astContext,
+                      diff,
+                      provider: options.provider,
+                      model,
+                      changedFiles,
+                      resolvedFindings,
+                      prDescription,
+                    },
                     (stage) => message(STAGE_MESSAGES[stage]),
                   );
             reviewResult = result;

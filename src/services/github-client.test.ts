@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  getPrMetadata,
   getResolvedThreads,
   MAX_RESOLVED_THREAD_PAGES,
   parseGitHubRemote,
@@ -205,6 +206,65 @@ test("postPrReview throws with response detail on a non-ok response", async (t) 
     postPrReview({ owner: "o", repo: "r", pr: 999, body: "x", comments: [], token: "tok" }),
     /HTTP 422.*line must be part of the diff/,
   );
+});
+
+test("getPrMetadata sends a GET to the PR endpoint and returns its title/body", async (t) => {
+  const originalFetch = global.fetch;
+  let capturedUrl: string | undefined;
+  let capturedInit: RequestInit | undefined;
+
+  global.fetch = (async (url: string, init: RequestInit) => {
+    capturedUrl = url;
+    capturedInit = init;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ title: "Add dark mode toggle", body: "## What\nAdds a toggle.\n" }),
+    } as Response;
+  }) as typeof fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  const result = await getPrMetadata("o", "r", 42, "tok");
+
+  assert.equal(capturedUrl, "https://api.github.com/repos/o/r/pulls/42");
+  assert.equal(capturedInit?.method, undefined);
+  const headers = capturedInit?.headers as Record<string, string>;
+  assert.equal(headers.Authorization, "Bearer tok");
+  assert.deepEqual(result, { title: "Add dark mode toggle", body: "## What\nAdds a toggle.\n" });
+});
+
+test("getPrMetadata treats a null body as an empty string", async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = (async () =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () => ({ title: "No description PR", body: null }),
+    }) as Response) as typeof fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  const result = await getPrMetadata("o", "r", 1, "tok");
+  assert.deepEqual(result, { title: "No description PR", body: "" });
+});
+
+test("getPrMetadata throws with response detail on a non-ok response", async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = (async () =>
+    ({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      text: async () => '{"message":"Not Found"}',
+    }) as Response) as typeof fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  await assert.rejects(getPrMetadata("o", "r", 999, "tok"), /HTTP 404.*Not Found/);
 });
 
 function reviewThreadsPage(nodes: unknown[], hasNextPage = false, endCursor: string | null = null) {
