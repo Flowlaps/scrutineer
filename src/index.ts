@@ -301,29 +301,17 @@ program
       if (githubTarget) {
         await clack.tasks([
           {
-            title: `Fetch resolved review threads on PR #${githubTarget.pr}`,
+            title: `Fetch PR #${githubTarget.pr} context (resolved threads + description)`,
             task: async () => {
-              resolvedFindings = await getResolvedThreads(
-                githubTarget.owner,
-                githubTarget.repo,
-                githubTarget.pr,
-                githubTarget.token,
-              );
+              // Independent reads against the same PR — run concurrently instead
+              // of sequencing two separate GitHub round trips (PR #66 review).
+              [resolvedFindings, prDescription] = await Promise.all([
+                getResolvedThreads(githubTarget.owner, githubTarget.repo, githubTarget.pr, githubTarget.token),
+                getPrMetadata(githubTarget.owner, githubTarget.repo, githubTarget.pr, githubTarget.token),
+              ]);
               return resolvedFindings.length > 0
                 ? `${resolvedFindings.length} resolved thread(s) found`
                 : "No resolved threads yet";
-            },
-          },
-          {
-            title: `Fetch PR #${githubTarget.pr} title/description`,
-            task: async () => {
-              prDescription = await getPrMetadata(
-                githubTarget.owner,
-                githubTarget.repo,
-                githubTarget.pr,
-                githubTarget.token,
-              );
-              return "PR description fetched";
             },
           },
         ]);

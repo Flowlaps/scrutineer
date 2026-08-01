@@ -524,13 +524,18 @@ test("includes the PR title/description as its own section in every call's user 
   }
 });
 
-test("omits the PR Description section entirely when no PR metadata was fetched (non-PR runs)", async () => {
+test("omits the PR Description section and any mention of a pull request when no PR metadata was fetched (non-PR runs, PR #66 review)", async () => {
   resetState();
 
   await runReviewPipeline(baseInput);
 
   for (const call of calls) {
     assert.doesNotMatch(call.userText, /## PR Description/);
+    assert.doesNotMatch(
+      call.userText,
+      /pull request/i,
+      `${call.kind} call shouldn't tell the model to expect PR content that was never sent`,
+    );
   }
 });
 
@@ -1330,6 +1335,33 @@ test("applies the same PR-wide resolvedFindings instruction to every chunk in ru
   for (const call of codeReviewCalls) {
     assert.match(call.systemText, /Previously Resolved Findings/);
     assert.match(call.systemText, /Already fixed\./);
+  }
+});
+
+test("includes the PR title/description in every chunk's user message and the whole-batch sandbox-test call (PR #66 review)", async () => {
+  resetState();
+
+  await runChunkedReviewPipeline({
+    ...chunkedBaseInput,
+    prDescription: { title: "Add dark mode toggle", body: "Adds a settings toggle." },
+  });
+
+  assert.equal(calls.length, 5, "2 chunks x (code-reviewer + security-auditor) + 1 sandbox-test call");
+  for (const call of calls) {
+    assert.match(call.userText, /## PR Description/, `${call.kind} call should include the PR Description section`);
+    assert.match(call.userText, /Add dark mode toggle/, `${call.kind} call should include the PR title`);
+    assert.match(call.userText, /Adds a settings toggle\./, `${call.kind} call should include the PR body`);
+  }
+});
+
+test("omits the PR Description section from every chunk and the sandbox-test call when no PR metadata was fetched (PR #66 review)", async () => {
+  resetState();
+
+  await runChunkedReviewPipeline(chunkedBaseInput);
+
+  assert.ok(calls.length > 0);
+  for (const call of calls) {
+    assert.doesNotMatch(call.userText, /## PR Description/);
   }
 });
 
