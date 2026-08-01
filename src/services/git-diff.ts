@@ -5,8 +5,69 @@ import { isDynamicSkillTrigger, isLockfileFile } from "./skill-router.js";
 
 const CHANGED_FILE_EXTENSIONS = [".ts", ".tsx"];
 
+// Node's execFileSync defaults maxBuffer to 1MB. getDiffAgainstTarget's
+// content-diff call now runs unrestricted (no `-- <pathspec>`, see
+// filterDiffToFiles below) to keep git's rename pairing intact, which means
+// it buffers the *whole* target...HEAD diff — not just the files under
+// review — before filtering. A generous but bounded cap avoids both a
+// pathological OOM and the default 1MB limit throwing on an entirely
+// ordinary diff (e.g. a small code change alongside an unrelated large
+// lockfile update in the same commit range — PR #65 review).
+const GIT_DIFF_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
+
 function runGitDiff(args: string[], cwd?: string): string {
-  return execFileSync("git", args, { encoding: "utf-8", cwd });
+  return execFileSync("git", args, { encoding: "utf-8", cwd, maxBuffer: GIT_DIFF_MAX_BUFFER_BYTES });
+}
+
+// Shared by getChangedFiles and getDiffAgainstTarget so a git failure —
+// unreachable ref, or a diff too large even for GIT_DIFF_MAX_BUFFER_BYTES
+// (ENOBUFS) — surfaces as one clear message instead of a raw
+// Node/child_process error string (CLAUDE.md's Phase 9: "a clear,
+// user-friendly error message, not a raw stack trace").
+function friendlyDiffError(target: string, error: unknown): Error {
+  const stderr =
+    error && typeof error === "object" && "stderr" in error ? String(error.stderr).trim() : "";
+  return new Error(
+    `scrutineer: could not diff against "${target}" — make sure it's a valid, reachable git ref ` +
+      `(branch, tag, or commit), e.g. --diff origin/main.` +
+      (stderr ? `\n${stderr}` : ""),
+    { cause: error },
+  );
+}
+
+const DIFF_GIT_HEADER_PATTERN = /^diff --git a\/.+ b\/(.+)$/;
+
+// Restricting `git diff` to a `-- <pathspec>` of only the new-side paths (as
+// this used to do) defeats git's rename pairing: with the old path excluded
+// from the pathspec, git can't match it against the new one and reports a
+// rename+edit as a 100%-new file, which corrupts hunk-line validation for
+// GitHub's Reviews API (issue #63). Running the diff unrestricted keeps
+// rename detection intact (matching what GitHub's own PR view sees), so
+// filtering is done afterward on the diff text instead of via pathspec.
+function filterDiffToFiles(diffText: string, filePaths: string[]): string {
+  const wanted = new Set(filePaths);
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let currentWanted = false;
+
+  const flush = () => {
+    if (currentWanted && current.length > 0) {
+      blocks.push(current.join("\n"));
+    }
+  };
+
+  for (const line of diffText.split("\n")) {
+    const headerMatch = line.match(DIFF_GIT_HEADER_PATTERN);
+    if (headerMatch) {
+      flush();
+      current = [];
+      currentWanted = wanted.has(headerMatch[1] ?? "");
+    }
+    current.push(line);
+  }
+  flush();
+
+  return blocks.join("\n");
 }
 
 function withSecretsScrubbed(content: string): string {
@@ -40,14 +101,7 @@ export function getChangedFiles(target: string, cwd?: string): string[] {
   try {
     output = runGitDiff(["diff", "--name-only", `${target}...HEAD`], cwd);
   } catch (error) {
-    const stderr =
-      error && typeof error === "object" && "stderr" in error ? String(error.stderr).trim() : "";
-    throw new Error(
-      `scrutineer: could not diff against "${target}" — make sure it's a valid, reachable git ref ` +
-        `(branch, tag, or commit), e.g. --diff origin/main.` +
-        (stderr ? `\n${stderr}` : ""),
-      { cause: error },
-    );
+    throw friendlyDiffError(target, error);
   }
   return output
     .split("\n")
@@ -75,20 +129,25 @@ export function getDiffAgainstTarget(target: string, filePaths: string[], cwd?: 
   const contentFiles = filePaths.filter((f) => !isLockfileFile(f));
 
   const parts: string[] = [];
-  if (contentFiles.length > 0) {
-    parts.push(runGitDiff(["diff", "--no-color", `${target}...HEAD`, "--", ...contentFiles], cwd));
-  }
-  if (lockfiles.length > 0) {
-    const stat = runGitDiff(
-      ["diff", "--no-color", "--stat", `${target}...HEAD`, "--", ...lockfiles],
-      cwd,
-    );
-    parts.push(
-      "# Lockfile changes (content omitted from review — generated files; only the " +
-        "fact that they changed and how much is shown, so a paired package.json " +
-        "update isn't flagged as missing):\n" +
-        stat,
-    );
+  try {
+    if (contentFiles.length > 0) {
+      const fullDiff = runGitDiff(["diff", "--no-color", `${target}...HEAD`], cwd);
+      parts.push(filterDiffToFiles(fullDiff, contentFiles));
+    }
+    if (lockfiles.length > 0) {
+      const stat = runGitDiff(
+        ["diff", "--no-color", "--stat", `${target}...HEAD`, "--", ...lockfiles],
+        cwd,
+      );
+      parts.push(
+        "# Lockfile changes (content omitted from review — generated files; only the " +
+          "fact that they changed and how much is shown, so a paired package.json " +
+          "update isn't flagged as missing):\n" +
+          stat,
+      );
+    }
+  } catch (error) {
+    throw friendlyDiffError(target, error);
   }
   return withSecretsScrubbed(parts.join("\n\n"));
 }
