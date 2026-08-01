@@ -213,6 +213,44 @@ test("getDiffAgainstTarget preserves rename detection for a renamed-and-edited f
   assert.equal(validLines.has(1), false, "untouched pre-existing content must not be treated as diff-touched");
 });
 
+test("getDiffAgainstTarget throws a friendly error for an unreachable target ref, not a raw git failure", (t) => {
+  const dir = setupRepo(t);
+  assert.throws(
+    () => getDiffAgainstTarget("origin/does-not-exist", ["base.ts"], dir),
+    /could not diff against "origin\/does-not-exist"/,
+  );
+});
+
+test("getDiffAgainstTarget doesn't throw ENOBUFS when the target range contains a large file outside the reviewed set (PR #65 review)", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "scrutineer-git-diff-large-range-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  git(dir, ["init", "-b", "main"]);
+  git(dir, ["config", "user.email", "test@example.com"]);
+  git(dir, ["config", "user.name", "Test"]);
+
+  writeFileSync(join(dir, "small.ts"), "export const small = 1;\n");
+  writeFileSync(join(dir, "generated.json"), "{}\n");
+  git(dir, ["add", "."]);
+  git(dir, ["commit", "-m", "base"]);
+
+  git(dir, ["checkout", "-b", "feature"]);
+  writeFileSync(join(dir, "small.ts"), "export const small = 2;\n");
+  // Unrestricted `git diff target...HEAD` (no `-- <pathspec>`, needed to keep
+  // rename pairing intact) buffers this file's diff too, even though it's not
+  // one of the files under review — large enough on its own to blow Node's
+  // execFileSync default 1MB maxBuffer, well within GIT_DIFF_MAX_BUFFER_BYTES.
+  const largeLines = Array.from({ length: 60_000 }, (_, i) => `"key-${i}": "value-${i}"`);
+  writeFileSync(join(dir, "generated.json"), `{\n${largeLines.join(",\n")}\n}\n`);
+  git(dir, ["add", "."]);
+  git(dir, ["commit", "-m", "regenerate a large unrelated file"]);
+
+  const diff = getDiffAgainstTarget("main", ["small.ts"], dir);
+  assert.match(diff, /-export const small = 1;/);
+  assert.match(diff, /\+export const small = 2;/);
+  assert.doesNotMatch(diff, /generated\.json/);
+});
+
 test("getDiffAgainstTarget scrubs values that look like secrets", (t) => {
   const dir = setupRepo(t);
   const secret = `sk-${"a".repeat(24)}`;
