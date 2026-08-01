@@ -16,7 +16,14 @@ import {
 } from "./services/ai-orchestrator.js";
 import { buildReportMarkdown } from "./services/report.js";
 import { buildInlineReview } from "./services/inline-review.js";
-import { getRepoSlugFromGit, getResolvedThreads, postPrReview, type ResolvedThreadSummary } from "./services/github-client.js";
+import {
+  getPrMetadata,
+  getRepoSlugFromGit,
+  getResolvedThreads,
+  postPrReview,
+  type PrMetadata,
+  type ResolvedThreadSummary,
+} from "./services/github-client.js";
 import { createModel, getModelId, MODEL_ENV_VAR, PROVIDER_IDS, type ProviderId } from "./utils/model-factory.js";
 import {
   chunkChangedFiles,
@@ -290,6 +297,7 @@ program
       }
 
       let resolvedFindings: ResolvedThreadSummary[] | undefined;
+      let prDescription: PrMetadata | undefined;
       if (githubTarget) {
         await clack.tasks([
           {
@@ -304,6 +312,18 @@ program
               return resolvedFindings.length > 0
                 ? `${resolvedFindings.length} resolved thread(s) found`
                 : "No resolved threads yet";
+            },
+          },
+          {
+            title: `Fetch PR #${githubTarget.pr} title/description`,
+            task: async () => {
+              prDescription = await getPrMetadata(
+                githubTarget.owner,
+                githubTarget.repo,
+                githubTarget.pr,
+                githubTarget.token,
+              );
+              return "PR description fetched";
             },
           },
         ]);
@@ -325,6 +345,7 @@ program
                       changedFiles,
                       chunks: reviewChunks,
                       resolvedFindings,
+                      prDescription,
                     },
                     (event) =>
                       message(
@@ -334,7 +355,16 @@ program
                       ),
                   )
                 : await runReviewPipeline(
-                    { filePath: label, astContext, diff, provider: options.provider, model, changedFiles, resolvedFindings },
+                    {
+                      filePath: label,
+                      astContext,
+                      diff,
+                      provider: options.provider,
+                      model,
+                      changedFiles,
+                      resolvedFindings,
+                      prDescription,
+                    },
                     (stage) => message(STAGE_MESSAGES[stage]),
                   );
             reviewResult = result;
