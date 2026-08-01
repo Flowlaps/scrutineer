@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getChangedFiles, getDiffAgainstTarget } from "./git-diff.js";
+import { parseDiffHunks } from "./diff-hunks.js";
 import { MAX_SECTION_CHARS } from "./ai-orchestrator.js";
 
 function git(cwd: string, args: string[]): void {
@@ -172,6 +173,44 @@ test("getDiffAgainstTarget keeps a code change intact under MAX_SECTION_CHARS ev
   assert.match(diff, /-export const app = 1;/);
   assert.match(diff, /\+export const app = 2;/);
   assert.doesNotMatch(diff, /dependency-0:/);
+});
+
+test("getDiffAgainstTarget preserves rename detection for a renamed-and-edited file (issue #63)", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "scrutineer-git-diff-rename-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  git(dir, ["init", "-b", "main"]);
+  git(dir, ["config", "user.email", "test@example.com"]);
+  git(dir, ["config", "user.name", "Test"]);
+
+  const original = Array.from({ length: 20 }, (_, i) => `line${i + 1}`).join("\n") + "\n";
+  mkdirSync(join(dir, "import"));
+  writeFileSync(join(dir, "import", "driver.ts"), original);
+  git(dir, ["add", "."]);
+  git(dir, ["commit", "-m", "base"]);
+
+  git(dir, ["checkout", "-b", "feature"]);
+  git(dir, ["mv", "import/driver.ts", "driver.ts"]);
+  const moved = original + "export function extra() {}\n";
+  writeFileSync(join(dir, "driver.ts"), moved);
+  git(dir, ["add", "."]);
+  git(dir, ["commit", "-m", "move and extend driver"]);
+
+  const files = getChangedFiles("main", dir);
+  assert.deepEqual(files, ["driver.ts"]);
+
+  const diff = getDiffAgainstTarget("main", files, dir);
+
+  // A correctly rename-paired diff shows the move and only the appended line
+  // as new — not the whole file re-created from /dev/null.
+  assert.match(diff, /rename from import\/driver\.ts/);
+  assert.match(diff, /rename to driver\.ts/);
+  assert.doesNotMatch(diff, /new file mode/);
+
+  const hunks = parseDiffHunks(diff);
+  const validLines = hunks.get("driver.ts") ?? new Set();
+  assert.equal(validLines.has(21), true, "the appended line should validate");
+  assert.equal(validLines.has(1), false, "untouched pre-existing content must not be treated as diff-touched");
 });
 
 test("getDiffAgainstTarget scrubs values that look like secrets", (t) => {

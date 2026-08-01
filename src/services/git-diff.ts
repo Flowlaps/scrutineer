@@ -9,6 +9,41 @@ function runGitDiff(args: string[], cwd?: string): string {
   return execFileSync("git", args, { encoding: "utf-8", cwd });
 }
 
+const DIFF_GIT_HEADER_PATTERN = /^diff --git a\/.+ b\/(.+)$/;
+
+// Restricting `git diff` to a `-- <pathspec>` of only the new-side paths (as
+// this used to do) defeats git's rename pairing: with the old path excluded
+// from the pathspec, git can't match it against the new one and reports a
+// rename+edit as a 100%-new file, which corrupts hunk-line validation for
+// GitHub's Reviews API (issue #63). Running the diff unrestricted keeps
+// rename detection intact (matching what GitHub's own PR view sees), so
+// filtering is done afterward on the diff text instead of via pathspec.
+function filterDiffToFiles(diffText: string, filePaths: string[]): string {
+  const wanted = new Set(filePaths);
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let currentWanted = false;
+
+  const flush = () => {
+    if (currentWanted && current.length > 0) {
+      blocks.push(current.join("\n"));
+    }
+  };
+
+  for (const line of diffText.split("\n")) {
+    const headerMatch = line.match(DIFF_GIT_HEADER_PATTERN);
+    if (headerMatch) {
+      flush();
+      current = [];
+      currentWanted = wanted.has(headerMatch[1] ?? "");
+    }
+    current.push(line);
+  }
+  flush();
+
+  return blocks.join("\n");
+}
+
 function withSecretsScrubbed(content: string): string {
   const { scrubbed, redactedCount } = scrubSecrets(content);
   if (redactedCount > 0) {
@@ -76,7 +111,8 @@ export function getDiffAgainstTarget(target: string, filePaths: string[], cwd?: 
 
   const parts: string[] = [];
   if (contentFiles.length > 0) {
-    parts.push(runGitDiff(["diff", "--no-color", `${target}...HEAD`, "--", ...contentFiles], cwd));
+    const fullDiff = runGitDiff(["diff", "--no-color", `${target}...HEAD`], cwd);
+    parts.push(filterDiffToFiles(fullDiff, contentFiles));
   }
   if (lockfiles.length > 0) {
     const stat = runGitDiff(
